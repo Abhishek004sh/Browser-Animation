@@ -20,6 +20,7 @@
     "@types/node": "catalog:",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
+    "@types/three": "^0.185.1",
     "@vitejs/plugin-react": "catalog:",
     "clsx": "catalog:",
     "framer-motion": "catalog:",
