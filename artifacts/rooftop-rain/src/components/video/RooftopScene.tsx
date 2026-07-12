@@ -1,5 +1,6 @@
 import React, { useMemo, useRef, useEffect } from 'react';
 import { Canvas, useFrame, extend } from '@react-three/fiber';
+import gsap from 'gsap';
 import * as THREE from 'three';
 import { motion } from 'framer-motion';
 import { shaderMaterial } from '@react-three/drei';
@@ -64,17 +65,71 @@ function makeWindowMaterial() {
 }
 
 // ─── Camera ───────────────────────────────────────────────────────────────────
+//
+// Cinematic sequence (120 s seamless loop):
+//   Phase 1 ( 0–45 s) — wide establishing shot dollies in toward rooftop
+//   Phase 2 (45–68 s) — arc sweep to the right at medium height
+//   Phase 3 (68–90 s) — gentle sweep back left, slightly lower
+//   Phase 4 (90–120s) — slow pull back to wide establishing position (→ seamless loop)
+//
+// Breathing is a tiny ±0.07 u oscillation layered on top of the GSAP target —
+// independent from the main timeline so it never resets on loop.
+//
 function CameraRig() {
+  // Plain objects mutated by GSAP — no React re-renders needed
+  const pos    = useRef({ x: 0,    y: 28, z: 65 }); // start = wide establishing shot
+  const breath = useRef({ x: 0,    y: 0,  z: 0  }); // handheld micro-movement
+
+  useEffect(() => {
+    // ── Main cinematic timeline ──────────────────────────────────────────────
+    const tl = gsap.timeline({ repeat: -1 });
+
+    // Phase 1: dolly in from wide to mid-close (0 → 45 s)
+    tl.to(pos.current, {
+      x: 6, y: 14, z: 22,
+      duration: 45, ease: 'power2.inOut',
+    }, 0);
+
+    // Phase 2: arc right to a three-quarter angle (45 → 68 s)
+    tl.to(pos.current, {
+      x: 20, y: 8, z: 4,
+      duration: 23, ease: 'power2.inOut',
+    }, 45);
+
+    // Phase 3: sweep back left, low orbit (68 → 90 s)
+    tl.to(pos.current, {
+      x: -14, y: 10, z: 10,
+      duration: 22, ease: 'power2.inOut',
+    }, 68);
+
+    // Phase 4: pull back wide — returns to start for seamless loop (90 → 120 s)
+    tl.to(pos.current, {
+      x: 0, y: 28, z: 65,
+      duration: 30, ease: 'power2.inOut',
+    }, 90);
+
+    // ── Handheld breathing — two out-of-phase oscillations ──────────────────
+    // X/Y axis: slow gentle sway
+    const b1 = gsap.to(breath.current, {
+      x: 0.07, y: 0.05,
+      duration: 3.4, ease: 'sine.inOut', yoyo: true, repeat: -1,
+    });
+    // Z axis: subtle push/pull
+    const b2 = gsap.to(breath.current, {
+      z: 0.06,
+      duration: 4.7, ease: 'sine.inOut', yoyo: true, repeat: -1,
+    });
+
+    return () => { tl.kill(); b1.kill(); b2.kill(); };
+  }, []);
+
   useFrame((state) => {
-    const t    = (state.clock.elapsedTime % 60) / 60;
-    const ease = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-    state.camera.position.set(
-      Math.sin(ease * Math.PI * 0.6) * 3,
-      6 - ease * 2.5,
-      22 - ease * 38,
-    );
+    const p = pos.current;
+    const b = breath.current;
+    state.camera.position.set(p.x + b.x, p.y + b.y, p.z + b.z);
     state.camera.lookAt(0, 2, -45);
   });
+
   return null;
 }
 
