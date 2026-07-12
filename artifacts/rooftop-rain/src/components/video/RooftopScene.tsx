@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useEffect } from 'react';
+import React, { useMemo, useRef, useEffect, Component, type ReactNode } from 'react';
 import { Canvas, useFrame, extend, useThree } from '@react-three/fiber';
 import gsap from 'gsap';
 import * as THREE from 'three';
@@ -1826,46 +1826,114 @@ function CinematicLighting() {
   );
 }
 
+// Falls back to a static night-skyline gradient if the browser/environment
+// cannot create a WebGL context (e.g. no GPU available), instead of
+// crashing the whole scene with an uncaught renderer error.
+class WebGLErrorBoundary extends Component<
+  { children: ReactNode },
+  { hasError: boolean }
+> {
+  constructor(props: { children: ReactNode }) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return <RooftopSceneFallback />;
+    }
+    return this.props.children;
+  }
+}
+
+// Probe WebGL support up front — some sandboxed/headless environments have
+// no GPU at all and throw synchronously inside the Three.js renderer, which
+// can slip past React error boundaries since it happens off the render path.
+function isWebGLAvailable(): boolean {
+  try {
+    const canvas = document.createElement('canvas');
+    return !!(
+      canvas.getContext('webgl2') ||
+      canvas.getContext('webgl') ||
+      canvas.getContext('experimental-webgl')
+    );
+  } catch {
+    return false;
+  }
+}
+
+function RooftopSceneFallback() {
+  return (
+    <div
+      className="absolute inset-0"
+      style={{
+        background:
+          'radial-gradient(circle at 50% 30%, #12203f 0%, #050814 60%, #03050a 100%)',
+      }}
+    />
+  );
+}
+
 export function RooftopScene() {
+  const webglAvailable = useMemo(() => isWebGLAvailable(), []);
+
+  if (!webglAvailable) {
+    return (
+      <motion.div
+        initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+        transition={{ duration: 1.5, ease: 'easeInOut' }}
+        className="absolute inset-0"
+      >
+        <RooftopSceneFallback />
+      </motion.div>
+    );
+  }
+
   return (
     <motion.div
       initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
       transition={{ duration: 1.5, ease: 'easeInOut' }}
       className="absolute inset-0"
     >
-      <Canvas
-        gl={{ antialias: false, powerPreference: 'high-performance', stencil: false, depth: true }}
-        camera={{ fov: 55, near: 0.5, far: 800 }}
-        dpr={[1, 1.5]}
-      >
-        <color attach="background" args={['#03050a']} />
-        <fogExp2 attach="fog" args={['#03050a', 0.011]} />
+      <WebGLErrorBoundary>
+        <Canvas
+          gl={{ antialias: false, powerPreference: 'default', failIfMajorPerformanceCaveat: false, stencil: false, depth: true }}
+          camera={{ fov: 55, near: 0.5, far: 800 }}
+          dpr={[1, 1.5]}
+        >
+          <color attach="background" args={['#03050a']} />
+          <fogExp2 attach="fog" args={['#03050a', 0.011]} />
 
-        {/* Scene fill — faint cool ambient keeps shadow areas readable */}
-        <ambientLight intensity={0.15} color="#1a2a55" />
-        {/* Sky/ground hemisphere — city ember below, deep night blue above */}
-        <hemisphereLight args={['#0c1830', '#2a0e04', 0.28]} />
-        {/* CinematicLighting: moon directional (castShadow), city bounce, rims, city fill */}
-        <CinematicLighting />
-        {/* Renderer: ACESFilmic tone mapping + PCFSoft shadow maps */}
-        <RendererConfig />
+          {/* Scene fill — faint cool ambient keeps shadow areas readable */}
+          <ambientLight intensity={0.15} color="#1a2a55" />
+          {/* Sky/ground hemisphere — city ember below, deep night blue above */}
+          <hemisphereLight args={['#0c1830', '#2a0e04', 0.28]} />
+          {/* CinematicLighting: moon directional (castShadow), city bounce, rims, city fill */}
+          <CinematicLighting />
+          {/* Renderer: ACESFilmic tone mapping + PCFSoft shadow maps */}
+          <RendererConfig />
 
-        <CameraRig />
-        <Characters />
-        <AtmosphericHaze />
-        <Rooftop />
-        <Skyline />
-        <DistantBillboards />
-        <BuildingBlinkers />
-        <Cars />
-        <Aircraft />
-        <Steam />
-        <CinematicRain />
-        <SplashParticles />
-        <RoofDrips />
-        <DynamicWeather />
-        <CinematicPost />
-      </Canvas>
+          <CameraRig />
+          <Characters />
+          <AtmosphericHaze />
+          <Rooftop />
+          <Skyline />
+          <DistantBillboards />
+          <BuildingBlinkers />
+          <Cars />
+          <Aircraft />
+          <Steam />
+          <CinematicRain />
+          <SplashParticles />
+          <RoofDrips />
+          <DynamicWeather />
+          <CinematicPost />
+        </Canvas>
+      </WebGLErrorBoundary>
     </motion.div>
   );
 }
