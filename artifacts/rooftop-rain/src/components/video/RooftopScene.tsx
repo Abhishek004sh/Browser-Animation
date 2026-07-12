@@ -94,14 +94,16 @@ function CameraRig() {
     }, 0);
 
     // Phase 2: arc right to a three-quarter angle (45 → 68 s)
+    // Narrower swing + slightly higher vantage keeps the rooftop deck framed
+    // instead of grazing out toward the distant skyline ring.
     tl.to(pos.current, {
-      x: 20, y: 8, z: 4,
+      x: 14, y: 12, z: 6,
       duration: 23, ease: 'power2.inOut',
     }, 45);
 
     // Phase 3: sweep back left, low orbit (68 → 90 s)
     tl.to(pos.current, {
-      x: -14, y: 10, z: 10,
+      x: -10, y: 13, z: 9,
       duration: 22, ease: 'power2.inOut',
     }, 68);
 
@@ -130,7 +132,9 @@ function CameraRig() {
     const p = pos.current;
     const b = breath.current;
     state.camera.position.set(p.x + b.x, p.y + b.y, p.z + b.z);
-    state.camera.lookAt(0, 2, -45);
+    // Pulled the look-at target forward from the far skyline (-45) toward the
+    // rooftop's own mid-depth so the deck stays the compositional anchor.
+    state.camera.lookAt(0, 2.4, -30);
   });
 
   return null;
@@ -152,7 +156,9 @@ function makeFarRainMaterial() {
         gl_Position = projectionMatrix * mvPos;
         float dist  = max(1.0, -mvPos.z);
         gl_PointSize = clamp((aSize * 420.0) / dist, 0.5, 18.0);
-        vAlpha = (1.0 - clamp((dist - 10.0) / 150.0, 0.0, 1.0) * 0.8) * 0.30;
+        // Softened far-rain alpha (0.30 → 0.22) so distant drops read as mist,
+        // not a wall of bright streaks.
+        vAlpha = (1.0 - clamp((dist - 10.0) / 150.0, 0.0, 1.0) * 0.8) * 0.22;
       }
     `,
     fragmentShader: `
@@ -162,7 +168,7 @@ function makeFarRainMaterial() {
         float d     = length(uv * vec2(3.2, 1.0));
         float alpha = (1.0 - smoothstep(0.1, 1.0, d)) * vAlpha;
         if (alpha < 0.003) discard;
-        gl_FragColor = vec4(0.46, 0.58, 0.74, alpha);
+        gl_FragColor = vec4(0.40, 0.51, 0.66, alpha);
       }
     `,
     transparent: true, depthWrite: false,
@@ -183,7 +189,9 @@ function makeNearRainMaterial() {
         gl_Position = projectionMatrix * mvPos;
         float dist   = max(1.0, -mvPos.z);
         gl_PointSize = clamp((aSize * 620.0) / dist, 1.0, 52.0);
-        vAlpha = 1.0 - clamp((dist - 4.0) / 100.0, 0.0, 1.0) * 0.75;
+        // Overall near-rain alpha trimmed 20% (×0.8) so drops feel like rain,
+        // not opaque white streaks slicing the frame.
+        vAlpha = (1.0 - clamp((dist - 4.0) / 100.0, 0.0, 1.0) * 0.75) * 0.8;
       }
     `,
     fragmentShader: `
@@ -194,11 +202,14 @@ function makeNearRainMaterial() {
         float xNarrow = 1.0 - smoothstep(0.0, 1.0, abs(uv.x) * 5.5);
         float yFade   = 1.0 - smoothstep(-0.95, 1.15, uv.y);
         float streak  = xNarrow * yFade;
-        // Specular core at the head
+        // Specular core at the head — weight reduced so the head no longer
+        // reads as a hot white dot on top of each streak.
         float core    = 1.0 - smoothstep(0.0, 1.0, length(uv * vec2(8.5, 2.0)));
-        float alpha   = (streak * 0.62 + core * 0.44) * vAlpha;
+        float alpha   = (streak * 0.55 + core * 0.30) * vAlpha;
         if (alpha < 0.004) discard;
-        gl_FragColor  = vec4(mix(vec3(0.53, 0.68, 0.90), vec3(0.92, 0.96, 1.0), core * 0.48), alpha);
+        // Cooler, less pure-white blend — natural rain-drop tint instead of
+        // bright white streaks.
+        gl_FragColor  = vec4(mix(vec3(0.48, 0.62, 0.82), vec3(0.78, 0.85, 0.95), core * 0.35), alpha);
       }
     `,
     transparent: true, depthWrite: false,
@@ -892,27 +903,29 @@ function Rooftop() {
     const t = state.clock.elapsedTime;
 
     // Billboard 1: warm amber → orange → red cycle
+    // Dimmed ~28% vs. prior pass so the toneMapped=false face no longer
+    // slams the bloom threshold and washes out into a flat white-orange glow.
     if (bb1MatRef.current) {
       const p  = t * 0.35;
-      const r  = 0.78 + 0.22 * Math.sin(p);
-      const g  = 0.22 + 0.20 * Math.sin(p + 1.2);
+      const r  = (0.78 + 0.22 * Math.sin(p)) * 0.72;
+      const g  = (0.22 + 0.20 * Math.sin(p + 1.2)) * 0.72;
       bb1MatRef.current.color.setRGB(r, g, 0.02);
     }
     if (bb1LightRef.current && bb1MatRef.current) {
       bb1LightRef.current.color.copy(bb1MatRef.current.color);
-      bb1LightRef.current.intensity = 2.2 + 0.8 * Math.sin(t * 0.35);
+      bb1LightRef.current.intensity = 1.4 + 0.5 * Math.sin(t * 0.35);
     }
 
     // Billboard 2: cyan → blue → teal cycle
     if (bb2MatRef.current) {
       const p  = t * 0.27 + 1.8;
-      const b  = 0.65 + 0.35 * Math.sin(p);
-      const g  = 0.38 + 0.30 * Math.sin(p + 0.9);
+      const b  = (0.65 + 0.35 * Math.sin(p)) * 0.72;
+      const g  = (0.38 + 0.30 * Math.sin(p + 0.9)) * 0.72;
       bb2MatRef.current.color.setRGB(0.02, g, b);
     }
     if (bb2LightRef.current && bb2MatRef.current) {
       bb2LightRef.current.color.copy(bb2MatRef.current.color);
-      bb2LightRef.current.intensity = 1.9 + 0.6 * Math.sin(t * 0.27 + 1.8);
+      bb2LightRef.current.intensity = 1.2 + 0.4 * Math.sin(t * 0.27 + 1.8);
     }
 
     // Antenna blinkers
@@ -1022,7 +1035,7 @@ function Rooftop() {
           <planeGeometry args={[21,0.4]} />
           <meshBasicMaterial color="#ffffff" transparent opacity={0.09} toneMapped={false} />
         </mesh>
-        <pointLight ref={bb1LightRef} position={[0,12,6]} intensity={2.5} color="#ff6600" distance={60} decay={2} />
+        <pointLight ref={bb1LightRef} position={[0,12,6]} intensity={1.4} color="#ff6600" distance={60} decay={2} />
       </group>
 
       {/* Billboard 2 — animated cyan */}
@@ -1040,7 +1053,7 @@ function Rooftop() {
           <planeGeometry args={[17,0.35]} />
           <meshBasicMaterial color="#ffffff" transparent opacity={0.07} toneMapped={false} />
         </mesh>
-        <pointLight ref={bb2LightRef} position={[0,10,5]} intensity={2} color="#00ccff" distance={50} decay={2} />
+        <pointLight ref={bb2LightRef} position={[0,10,5]} intensity={1.2} color="#00ccff" distance={50} decay={2} />
       </group>
 
       {/* Fire escape */}
@@ -1719,13 +1732,16 @@ function CinematicPost() {
   useEffect(() => {
     // Wire DOF to character position once mounted
     if (dofRef.current) dofRef.current.target = _charPos;
-    // Film grain — very subtle; set via blendMode since Noise has no opacity prop
-    if (noiseRef.current?.blendMode) noiseRef.current.blendMode.opacity.value = 0.038;
+    // Film grain — very subtle; set via blendMode since Noise has no opacity prop.
+    // Toned down from 0.038 so grain doesn't chew into crisp highlights.
+    if (noiseRef.current?.blendMode) noiseRef.current.blendMode.opacity.value = 0.022;
   }, [_charPos]);
 
   useFrame(() => {
-    // Dynamic exposure — brief lift during lightning flash, smooth lerp back
-    const targetExp = 0.85 + W.lightning * 0.45;
+    // Dynamic exposure — brief lift during lightning flash, smooth lerp back.
+    // Base raised slightly from 0.85 so rooftop clutter/wear stays readable;
+    // lightning lift trimmed a touch so flashes don't blow out highlights.
+    const targetExp = 0.95 + W.lightning * 0.40;
     gl.toneMappingExposure += (targetExp - gl.toneMappingExposure) * 0.10;
 
     // Color grade — storm peak = cool blue-shift, calm = faint warm hue
@@ -1740,12 +1756,14 @@ function CinematicPost() {
 
   return (
     <EffectComposer multisampling={0} enableNormalPass={false}>
-      {/* Bloom — city lights glow, wet puddles pop, lightning halos bloom */}
+      {/* Bloom — city lights glow, wet puddles pop, lightning halos bloom.
+          Threshold raised and intensity/radius trimmed so only the brightest
+          sources (beacons, lightning) bloom, keeping highlights crisp. */}
       <Bloom
-        luminanceThreshold={0.60}
-        luminanceSmoothing={0.50}
-        intensity={0.65}
-        radius={0.72}
+        luminanceThreshold={0.70}
+        luminanceSmoothing={0.45}
+        intensity={0.42}
+        radius={0.55}
         mipmapBlur
       />
       {/* Depth of field — characters are always sharp; far skyline softly blurred */}
@@ -1777,7 +1795,9 @@ function RendererConfig() {
   const { gl } = useThree();
   useEffect(() => {
     gl.toneMapping         = THREE.ACESFilmicToneMapping;
-    gl.toneMappingExposure = 0.85;
+    // Raised from 0.85 → 0.95 so rooftop details read clearly without
+    // flattening the nighttime mood (CinematicPost re-targets this each frame).
+    gl.toneMappingExposure = 0.95;
     gl.shadowMap.enabled   = true;
     gl.shadowMap.type      = THREE.PCFSoftShadowMap;
   }, [gl]);
