@@ -31,6 +31,9 @@ declare module '@react-three/fiber' {
   }
 }
 
+// ─── Module-level shared weather state (written by DynamicWeather, read by all) ─
+const W = { phase: 0.55, lightning: 0.0, _nextStrike: 14.0 };
+
 // ─── Window ShaderMaterial (GPU-animated per-instance) ────────────────────────
 // Three.js (r131+) auto-injects instanceMatrix into custom ShaderMaterial
 // when the parent object is an InstancedMesh.
@@ -1008,13 +1011,12 @@ function Rooftop() {
 
 // ─── Puddle ripples ───────────────────────────────────────────────────────────
 function PuddleRipples() {
-  // Matches the puddle positions defined in Rooftop: [x, z, sizeScale]
   const PUDDLES: [number, number, number][] = [
     [3,6,0.4], [-7,-12,0.55], [12,-8,0.3], [-14,15,0.5],
     [20,3,0.45], [-3,-28,0.5], [8,-30,0.35],
   ];
   const mat = useMemo(() => new THREE.ShaderMaterial({
-    uniforms: { uTime: { value: 0 } },
+    uniforms: { uTime: { value: 0 }, uLightning: { value: 0 } },
     vertexShader: `
       varying vec2 vUv;
       void main() {
@@ -1024,6 +1026,7 @@ function PuddleRipples() {
     `,
     fragmentShader: `
       uniform float uTime;
+      uniform float uLightning;
       varying vec2 vUv;
       void main() {
         vec2  uv = vUv - 0.5;
@@ -1038,13 +1041,22 @@ function PuddleRipples() {
         }
         float alpha = ring * (1.0 - smoothstep(0.62, 1.0, d)) * 0.52;
         if (alpha < 0.004) discard;
-        gl_FragColor = vec4(0.56, 0.72, 0.90, alpha);
+        float lit = 1.0 + uLightning * 3.5;
+        gl_FragColor = vec4(
+          min(0.56 * lit, 1.0),
+          min(0.72 * lit, 1.0),
+          min(0.90 * lit, 1.0),
+          min(alpha * (1.0 + uLightning * 1.8), 1.0)
+        );
       }
     `,
     transparent: true, depthWrite: false, side: THREE.DoubleSide,
   }), []);
 
-  useFrame((_, dt) => { mat.uniforms.uTime.value += dt; });
+  useFrame((_, dt) => {
+    mat.uniforms.uTime.value      += dt;
+    mat.uniforms.uLightning.value  = W.lightning;
+  });
 
   return (
     <group>
@@ -1060,7 +1072,7 @@ function PuddleRipples() {
 // ─── Thin water film flowing across rooftop ───────────────────────────────────
 function WaterFlow() {
   const mat = useMemo(() => new THREE.ShaderMaterial({
-    uniforms: { uTime: { value: 0 } },
+    uniforms: { uTime: { value: 0 }, uLightning: { value: 0 } },
     vertexShader: `
       varying vec2 vUv;
       void main() {
@@ -1070,6 +1082,7 @@ function WaterFlow() {
     `,
     fragmentShader: `
       uniform float uTime;
+      uniform float uLightning;
       varying vec2 vUv;
       float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
       float noise(vec2 p) {
@@ -1079,24 +1092,257 @@ function WaterFlow() {
                    mix(hash(i + vec2(0.0,1.0)), hash(i + vec2(1.0,1.0)), f.x), f.y);
       }
       void main() {
-        vec2  flow = vec2(0.038, 0.055);
-        float n1   = noise(vUv * 9.0  + flow * uTime);
-        float n2   = noise(vUv * 6.0  + flow * uTime * 0.65 + vec2(1.7, 0.9));
-        float riv  = pow(abs(sin((vUv.x * 24.0 + vUv.y * 9.0 + uTime * 0.12) * 3.14159)), 9.0);
-        float alpha = n1 * n2 * 0.055 + riv * 0.040;
+        vec2  flow  = vec2(0.038, 0.055);
+        float n1    = noise(vUv * 9.0  + flow * uTime);
+        float n2    = noise(vUv * 6.0  + flow * uTime * 0.65 + vec2(1.7, 0.9));
+        float riv   = pow(abs(sin((vUv.x * 24.0 + vUv.y * 9.0 + uTime * 0.12) * 3.14159)), 9.0);
+        float base  = n1 * n2 * 0.055 + riv * 0.040;
+        float alpha = min(base * (1.0 + uLightning * 4.0), 0.95);
         if (alpha < 0.004) discard;
-        gl_FragColor = vec4(0.50, 0.65, 0.85, alpha);
+        float lit = 1.0 + uLightning * 2.8;
+        gl_FragColor = vec4(min(0.50*lit,1.0), min(0.65*lit,1.0), min(0.85*lit,1.0), alpha);
       }
     `,
     transparent: true, depthWrite: false,
   }), []);
 
-  useFrame((_, dt) => { mat.uniforms.uTime.value += dt; });
+  useFrame((_, dt) => {
+    mat.uniforms.uTime.value      += dt;
+    mat.uniforms.uLightning.value  = W.lightning;
+  });
 
   return (
     <mesh position={[0, 0.03, -20]} rotation={[-Math.PI/2, 0, 0]} material={mat}>
       <planeGeometry args={[118, 118]} />
     </mesh>
+  );
+}
+
+// ─── Storm clouds — 3 FBM-noise horizontal layers, drifting ───────────────────
+function makeCloudMat() {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uTime:      { value: 0 },
+      uDrift:     { value: 0.006 },
+      uPhase:     { value: 0.55 },
+      uLightning: { value: 0 },
+    },
+    vertexShader: `
+      varying vec2 vUv;
+      void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
+    `,
+    fragmentShader: `
+      uniform float uTime; uniform float uDrift; uniform float uPhase; uniform float uLightning;
+      varying vec2  vUv;
+      float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+      float noise(vec2 p) {
+        vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
+        return mix(mix(hash(i), hash(i+vec2(1.0,0.0)), f.x),
+                   mix(hash(i+vec2(0.0,1.0)), hash(i+vec2(1.0,1.0)), f.x), f.y);
+      }
+      float fbm(vec2 p) {
+        float v = 0.0, a = 0.55;
+        for (int i = 0; i < 6; i++) { v += a * noise(p); p = p * 2.1 + vec2(1.7, 9.2); a *= 0.5; }
+        return v;
+      }
+      void main() {
+        vec2  uv    = vUv + vec2(uTime * uDrift, uTime * uDrift * 0.38);
+        float n     = fbm(uv * 2.4);
+        float n2    = fbm(uv * 5.1 + vec2(3.1, 1.9));
+        float cloud = smoothstep(0.20, 0.88, n * n2 * 2.6);
+        float alpha = cloud * uPhase * 0.82;
+        if (alpha < 0.010) discard;
+        float lit = 1.0 + uLightning * 1.8;
+        vec3  col = mix(vec3(0.040, 0.050, 0.090), vec3(0.260, 0.280, 0.340), cloud * 0.55) * lit;
+        gl_FragColor = vec4(col, alpha);
+      }
+    `,
+    transparent: true, depthWrite: false, side: THREE.DoubleSide,
+  });
+}
+
+function StormClouds() {
+  const LAYERS = useMemo(() => [
+    { y: 52, z: -130, w: 440, h: 200, drift: 0.0052 },
+    { y: 68, z: -205, w: 530, h: 185, drift: 0.0034 },
+    { y: 38, z:  -88, w: 370, h: 165, drift: 0.0071 },
+  ], []);
+  const mats = useMemo(() => LAYERS.map(l => {
+    const m = makeCloudMat();
+    m.uniforms.uDrift.value = l.drift;
+    return m;
+  }), [LAYERS]);
+
+  useFrame((_, dt) => {
+    mats.forEach(m => {
+      m.uniforms.uTime.value      += dt;
+      m.uniforms.uPhase.value      = W.phase;
+      m.uniforms.uLightning.value  = W.lightning;
+    });
+  });
+
+  return (
+    <group>
+      {LAYERS.map((l, i) => (
+        <mesh key={i} position={[0, l.y, l.z]} rotation={[-Math.PI / 2, 0, 0]} material={mats[i]}>
+          <planeGeometry args={[l.w, l.h]} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+// ─── Building fog — noise planes at streetscape depths ────────────────────────
+function BuildingFog() {
+  const mat = useMemo(() => new THREE.ShaderMaterial({
+    uniforms: { uTime: { value: 0 }, uPhase: { value: 0.55 } },
+    vertexShader: `
+      varying vec2 vUv;
+      void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
+    `,
+    fragmentShader: `
+      uniform float uTime; uniform float uPhase;
+      varying vec2  vUv;
+      float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+      float noise(vec2 p) {
+        vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
+        return mix(mix(hash(i), hash(i+vec2(1.0,0.0)), f.x),
+                   mix(hash(i+vec2(0.0,1.0)), hash(i+vec2(1.0,1.0)), f.x), f.y);
+      }
+      void main() {
+        vec2  uv  = vUv + vec2(uTime * 0.007, 0.0);
+        float n   = noise(uv * 3.8) * noise(uv * 7.4 + vec2(1.3, 2.7));
+        float fog = smoothstep(0.09, 0.55, n) * uPhase;
+        float ey  = 1.0 - smoothstep(0.30, 0.50, abs(vUv.y - 0.5));
+        float ex  = 1.0 - smoothstep(0.40, 0.50, abs(vUv.x - 0.5));
+        float alpha = fog * ey * ex * 0.30;
+        if (alpha < 0.006) discard;
+        gl_FragColor = vec4(0.10, 0.13, 0.20, alpha);
+      }
+    `,
+    transparent: true, depthWrite: false,
+  }), []);
+
+  const PLANES: [number, number, number, number][] = [
+    [13,  -92, 290, 48],
+    [10, -150, 370, 40],
+    [ 8, -215, 430, 34],
+    [14, -280, 490, 28],
+  ];
+
+  useFrame((_, dt) => {
+    mat.uniforms.uTime.value  += dt;
+    mat.uniforms.uPhase.value  = W.phase;
+  });
+
+  return (
+    <group>
+      {PLANES.map(([y, z, w, h], i) => (
+        <mesh key={i} position={[0, y, z]} material={mat}>
+          <planeGeometry args={[w, h]} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+// ─── Rooftop mist — low drifting veil across the concrete floor ───────────────
+function RooftopMist() {
+  const mat = useMemo(() => new THREE.ShaderMaterial({
+    uniforms: { uTime: { value: 0 }, uPhase: { value: 0.55 }, uLightning: { value: 0 } },
+    vertexShader: `
+      varying vec2 vUv;
+      void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
+    `,
+    fragmentShader: `
+      uniform float uTime; uniform float uPhase; uniform float uLightning;
+      varying vec2  vUv;
+      float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+      float noise(vec2 p) {
+        vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
+        return mix(mix(hash(i), hash(i+vec2(1.0,0.0)), f.x),
+                   mix(hash(i+vec2(0.0,1.0)), hash(i+vec2(1.0,1.0)), f.x), f.y);
+      }
+      void main() {
+        vec2  uv   = vUv + vec2(uTime * 0.020, uTime * 0.013);
+        float n1   = noise(uv * 4.5);
+        float n2   = noise(uv * 9.0 + vec2(2.1, 3.7));
+        float mist = smoothstep(0.18, 0.82, n1 * n2 * 2.4);
+        float alpha = mist * uPhase * 0.40 * (1.0 + uLightning * 1.6);
+        if (alpha < 0.007) discard;
+        gl_FragColor = vec4(0.80, 0.86, 0.96, alpha);
+      }
+    `,
+    transparent: true, depthWrite: false,
+  }), []);
+
+  useFrame((_, dt) => {
+    mat.uniforms.uTime.value      += dt;
+    mat.uniforms.uPhase.value      = W.phase;
+    mat.uniforms.uLightning.value  = W.lightning;
+  });
+
+  return (
+    <mesh position={[0, 1.5, -20]} rotation={[-Math.PI / 2, 0, 0]} material={mat}>
+      <planeGeometry args={[130, 130]} />
+    </mesh>
+  );
+}
+
+// ─── Dynamic weather controller — timing, lightning lights, all sub-effects ───
+function DynamicWeather() {
+  const ambRef  = useRef<THREE.AmbientLight>(null);
+  const ptRef   = useRef<THREE.PointLight>(null);
+  const strikeT = useRef(0.0);
+  const active  = useRef(false);
+
+  useFrame((state, dt) => {
+    const t = state.clock.elapsedTime;
+
+    // Weather phase: dual-frequency sine → 0 = calm, 1 = full storm (~13-min cycle)
+    const raw = 0.52 + 0.40 * Math.sin(t * 0.0121) + 0.08 * Math.sin(t * 0.0313 + 1.1);
+    W.phase   = Math.max(0.0, Math.min(1.0, raw));
+
+    // Lightning countdown
+    W._nextStrike -= dt;
+    if (W._nextStrike <= 0 && !active.current) {
+      active.current  = true;
+      strikeT.current = 0.0;
+      // Rare at calm (up to ~36 s), frequent at peak storm (as short as 4 s)
+      W._nextStrike = 4.0 + (1.0 - W.phase) * 28.0 + Math.random() * 8.0;
+    }
+
+    // Flash envelope: instant spike → partial decay → secondary flash → tail off
+    if (active.current) {
+      strikeT.current += dt;
+      const s = strikeT.current;
+      let fl = 0.0;
+      if      (s < 0.055) fl = s / 0.055;
+      else if (s < 0.090) fl = 1.0 - (s - 0.055) / 0.035 * 0.55;
+      else if (s < 0.130) fl = 0.45 + (s - 0.090) / 0.040 * 0.40;
+      else if (s < 0.240) fl = 0.85 - (s - 0.130) / 0.110;
+      else { fl = 0.0; active.current = false; }
+      W.lightning = fl;
+    } else {
+      W.lightning = 0.0;
+    }
+
+    // Illuminate entire scene during strike
+    if (ambRef.current) ambRef.current.intensity  = W.lightning * 4.5;
+    if (ptRef.current)  ptRef.current.intensity   = W.lightning * 340.0;
+  });
+
+  return (
+    <>
+      <ambientLight ref={ambRef} color="#c8dcff" intensity={0} />
+      <pointLight   ref={ptRef}  color="#d0e4ff" intensity={0}
+                    position={[0, 240, -80]} distance={1000} decay={1.1} />
+      <StormClouds />
+      <BuildingFog />
+      <RooftopMist />
+      <PuddleRipples />
+      <WaterFlow />
+    </>
   );
 }
 
@@ -1132,8 +1378,7 @@ export function RooftopScene() {
         <CinematicRain />
         <SplashParticles />
         <RoofDrips />
-        <PuddleRipples />
-        <WaterFlow />
+        <DynamicWeather />
       </Canvas>
     </motion.div>
   );
