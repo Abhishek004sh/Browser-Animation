@@ -1856,11 +1856,16 @@ class WebGLErrorBoundary extends Component<
 function isWebGLAvailable(): boolean {
   try {
     const canvas = document.createElement('canvas');
-    return !!(
-      canvas.getContext('webgl2') ||
-      canvas.getContext('webgl') ||
-      canvas.getContext('experimental-webgl')
-    );
+    // Mirror exactly what R3F's <Canvas> does internally — some environments
+    // (no GPU device) hand back a context from getContext() that later fails
+    // when a real THREE.WebGLRenderer tries to use it, so probe with the
+    // actual renderer constructor rather than the raw context call.
+    const renderer = new THREE.WebGLRenderer({
+      canvas,
+      failIfMajorPerformanceCaveat: false,
+    });
+    renderer.dispose();
+    return true;
   } catch {
     return false;
   }
