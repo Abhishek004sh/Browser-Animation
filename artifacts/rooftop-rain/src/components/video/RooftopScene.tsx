@@ -4,6 +4,8 @@ import gsap from 'gsap';
 import * as THREE from 'three';
 import { motion } from 'framer-motion';
 import { shaderMaterial } from '@react-three/drei';
+import { EffectComposer, Bloom, DepthOfField, Vignette, ChromaticAberration, Noise, HueSaturation } from '@react-three/postprocessing';
+import { BlendFunction } from 'postprocessing';
 
 // ─── Shader materials ──────────────────────────────────────────────────────────
 
@@ -1702,6 +1704,73 @@ function Characters() {
 }
 
 // ─── Scene root ───────────────────────────────────────────────────────────────
+// ─── Cinematic post-processing pass ───────────────────────────────────────────
+function CinematicPost() {
+  const { gl } = useThree();
+  const dofRef   = useRef<any>(null);
+  const hsRef    = useRef<any>(null);
+  const noiseRef = useRef<any>(null);
+  // Static Vector2 for chromatic aberration — avoids per-render allocation
+  const caOffset = useMemo(() => new THREE.Vector2(0.00042, 0.00042), []);
+  // Character world-space focus point — DOF tracks here regardless of camera phase
+  const _charPos = useMemo(() => new THREE.Vector3(0, 1.8, -79), []);
+
+  useEffect(() => {
+    // Wire DOF to character position once mounted
+    if (dofRef.current) dofRef.current.target = _charPos;
+    // Film grain — very subtle; set via blendMode since Noise has no opacity prop
+    if (noiseRef.current?.blendMode) noiseRef.current.blendMode.opacity.value = 0.038;
+  }, [_charPos]);
+
+  useFrame(() => {
+    // Dynamic exposure — brief lift during lightning flash, smooth lerp back
+    const targetExp = 0.85 + W.lightning * 0.45;
+    gl.toneMappingExposure += (targetExp - gl.toneMappingExposure) * 0.10;
+
+    // Color grade — storm peak = cool blue-shift, calm = faint warm hue
+    if (hsRef.current) {
+      const storm     = W.phase;
+      const targetHue = storm * 0.025 - (1.0 - storm) * 0.010;
+      const targetSat = storm * 0.06;
+      hsRef.current.hue        += (targetHue - hsRef.current.hue)        * 0.04;
+      hsRef.current.saturation += (targetSat - hsRef.current.saturation) * 0.04;
+    }
+  });
+
+  return (
+    <EffectComposer multisampling={0} enableNormalPass={false}>
+      {/* Bloom — city lights glow, wet puddles pop, lightning halos bloom */}
+      <Bloom
+        luminanceThreshold={0.60}
+        luminanceSmoothing={0.50}
+        intensity={0.65}
+        radius={0.72}
+        mipmapBlur
+      />
+      {/* Depth of field — characters are always sharp; far skyline softly blurred */}
+      <DepthOfField
+        ref={dofRef}
+        worldFocusDistance={120}
+        worldFocusRange={60}
+        bokehScale={2.0}
+        height={480}
+      />
+      {/* Color grading — hue and saturation driven by storm intensity in useFrame */}
+      <HueSaturation ref={hsRef} hue={0} saturation={0} />
+      {/* Vignette — subtle frame darkening draws eye toward scene center */}
+      <Vignette offset={0.44} darkness={0.46} eskil={false} />
+      {/* Chromatic aberration — barely perceptible lateral color fringe */}
+      <ChromaticAberration
+        offset={caOffset}
+        radialModulation={false}
+        modulationOffset={0}
+      />
+      {/* Film grain — very faint ADD blend for movie-like texture */}
+      <Noise ref={noiseRef} premultiplied blendFunction={BlendFunction.ADD} />
+    </EffectComposer>
+  );
+}
+
 // ─── Renderer config — ACES filmic tone mapping, PCFSoft shadows ──────────────
 function RendererConfig() {
   const { gl } = useThree();
@@ -1795,6 +1864,7 @@ export function RooftopScene() {
         <SplashParticles />
         <RoofDrips />
         <DynamicWeather />
+        <CinematicPost />
       </Canvas>
     </motion.div>
   );

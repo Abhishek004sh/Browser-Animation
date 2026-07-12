@@ -33,5 +33,9 @@
     "tailwindcss": "catalog:",
     "three": "^0.182.0",
     "vite": "catalog:"
+  },
+  "dependencies": {
+    "@react-three/postprocessing": "^3.0.4",
+    "postprocessing": "^6.39.2"
   }
 }

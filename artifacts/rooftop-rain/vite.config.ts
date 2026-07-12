@@ -48,6 +48,8 @@ export default defineConfig({
       : []),
   ],
   resolve: {
+    // Force single instances of shared singletons — postprocessing/fiber can duplicate them
+    dedupe: ['three', 'react', 'react-dom', '@react-three/fiber'],
     alias: {
       '@': path.resolve(import.meta.dirname, 'src'),
       '@assets': path.resolve(
