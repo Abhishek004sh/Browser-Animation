@@ -6,19 +6,6 @@ import { shaderMaterial } from '@react-three/drei';
 
 // ─── Shader materials ──────────────────────────────────────────────────────────
 
-const RainMaterial = shaderMaterial(
-  { uTime: 0 },
-  `uniform float uTime; attribute float aY0; attribute float aXZ;
-   void main() {
-     vec3 p = position;
-     p.y = mod(p.y - uTime * 22.0, 65.0) - 5.0;
-     p.x += sin(uTime * 0.3 + aXZ) * 0.4;
-     gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
-     gl_PointSize = 1.2;
-   }`,
-  `void main() { gl_FragColor = vec4(0.55, 0.70, 1.0, 0.38); }`
-);
-
 const SteamMaterial = shaderMaterial(
   { uTime: 0 },
   `uniform float uTime; attribute float aPhase;
@@ -36,11 +23,10 @@ const SteamMaterial = shaderMaterial(
   `void main() { gl_FragColor = vec4(0.85, 0.88, 0.95, 0.20); }`
 );
 
-extend({ RainMaterial, SteamMaterial });
+extend({ SteamMaterial });
 
 declare module '@react-three/fiber' {
   interface ThreeElements {
-    rainMaterial:  React.ComponentProps<typeof RainMaterial>  & { attach?: string };
     steamMaterial: React.ComponentProps<typeof SteamMaterial> & { attach?: string };
   }
 }
@@ -89,26 +75,257 @@ function CameraRig() {
   return null;
 }
 
-// ─── Rain ─────────────────────────────────────────────────────────────────────
-function Rain() {
-  const matRef = useRef<any>(null);
-  const COUNT  = 8000;
-  const geo    = useMemo(() => {
-    const g   = new THREE.BufferGeometry();
-    const pos = new Float32Array(COUNT * 3);
-    const aY0 = new Float32Array(COUNT);
-    const aXZ = new Float32Array(COUNT);
+// ─── Cinematic Rain — GPU particle system ────────────────────────────────────
+
+function makeFarRainMaterial() {
+  return new THREE.ShaderMaterial({
+    uniforms: { uTime: { value: 0 }, uWindX: { value: 0 }, uWindZ: { value: 0 } },
+    vertexShader: `
+      attribute float aX; attribute float aY0; attribute float aZ;
+      attribute float aSpeed; attribute float aSize;
+      uniform float uTime; uniform float uWindX; uniform float uWindZ;
+      varying float vAlpha;
+      void main() {
+        float y    = mod(aY0 - uTime * aSpeed * 20.0, 72.0) - 6.0;
+        vec4 mvPos = modelViewMatrix * vec4(aX + uWindX * 1.2, y, aZ + uWindZ * 0.8, 1.0);
+        gl_Position = projectionMatrix * mvPos;
+        float dist  = max(1.0, -mvPos.z);
+        gl_PointSize = clamp((aSize * 420.0) / dist, 0.5, 18.0);
+        vAlpha = (1.0 - clamp((dist - 10.0) / 150.0, 0.0, 1.0) * 0.8) * 0.30;
+      }
+    `,
+    fragmentShader: `
+      varying float vAlpha;
+      void main() {
+        vec2  uv    = gl_PointCoord * 2.0 - 1.0;
+        float d     = length(uv * vec2(3.2, 1.0));
+        float alpha = (1.0 - smoothstep(0.1, 1.0, d)) * vAlpha;
+        if (alpha < 0.003) discard;
+        gl_FragColor = vec4(0.46, 0.58, 0.74, alpha);
+      }
+    `,
+    transparent: true, depthWrite: false,
+  });
+}
+
+function makeNearRainMaterial() {
+  return new THREE.ShaderMaterial({
+    uniforms: { uTime: { value: 0 }, uWindX: { value: 0 }, uWindZ: { value: 0 } },
+    vertexShader: `
+      attribute float aX; attribute float aY0; attribute float aZ;
+      attribute float aSpeed; attribute float aSize;
+      uniform float uTime; uniform float uWindX; uniform float uWindZ;
+      varying float vAlpha;
+      void main() {
+        float y    = mod(aY0 - uTime * aSpeed * 22.0, 75.0) - 8.0;
+        vec4 mvPos = modelViewMatrix * vec4(aX + uWindX * 2.8, y, aZ + uWindZ * 1.8, 1.0);
+        gl_Position = projectionMatrix * mvPos;
+        float dist   = max(1.0, -mvPos.z);
+        gl_PointSize = clamp((aSize * 620.0) / dist, 1.0, 52.0);
+        vAlpha = 1.0 - clamp((dist - 4.0) / 100.0, 0.0, 1.0) * 0.75;
+      }
+    `,
+    fragmentShader: `
+      varying float vAlpha;
+      void main() {
+        vec2  uv      = gl_PointCoord * 2.0 - 1.0;
+        // Streak: narrow in x, bright head (uv.y=-1) fading to tail (uv.y=+1)
+        float xNarrow = 1.0 - smoothstep(0.0, 1.0, abs(uv.x) * 5.5);
+        float yFade   = 1.0 - smoothstep(-0.95, 1.15, uv.y);
+        float streak  = xNarrow * yFade;
+        // Specular core at the head
+        float core    = 1.0 - smoothstep(0.0, 1.0, length(uv * vec2(8.5, 2.0)));
+        float alpha   = (streak * 0.62 + core * 0.44) * vAlpha;
+        if (alpha < 0.004) discard;
+        gl_FragColor  = vec4(mix(vec3(0.53, 0.68, 0.90), vec3(0.92, 0.96, 1.0), core * 0.48), alpha);
+      }
+    `,
+    transparent: true, depthWrite: false,
+  });
+}
+
+function makeRainGeo(
+  count: number, xRange: number, zCenter: number, zRange: number,
+  sizeMin: number, sizeMax: number, speedMin: number, speedMax: number,
+) {
+  const g      = new THREE.BufferGeometry();
+  const aX     = new Float32Array(count);
+  const aY0    = new Float32Array(count);
+  const aZ     = new Float32Array(count);
+  const aSpeed = new Float32Array(count);
+  const aSize  = new Float32Array(count);
+  const pos    = new Float32Array(count * 3);
+  for (let i = 0; i < count; i++) {
+    aX[i]     = (Math.random() - 0.5) * xRange;
+    aY0[i]    = Math.random() * 75;
+    aZ[i]     = zCenter + (Math.random() - 0.5) * zRange;
+    aSpeed[i] = speedMin + Math.random() * (speedMax - speedMin);
+    aSize[i]  = sizeMin  + Math.random() * (sizeMax  - sizeMin);
+    pos[i*3]  = aX[i]; pos[i*3+1] = aY0[i]; pos[i*3+2] = aZ[i];
+  }
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('aX',     new THREE.BufferAttribute(aX, 1));
+  g.setAttribute('aY0',    new THREE.BufferAttribute(aY0, 1));
+  g.setAttribute('aZ',     new THREE.BufferAttribute(aZ, 1));
+  g.setAttribute('aSpeed', new THREE.BufferAttribute(aSpeed, 1));
+  g.setAttribute('aSize',  new THREE.BufferAttribute(aSize, 1));
+  return g;
+}
+
+function CinematicRain() {
+  const farMat  = useMemo(() => makeFarRainMaterial(),  []);
+  const nearMat = useMemo(() => makeNearRainMaterial(), []);
+  // Far layer: wide background, soft blobs
+  const farGeo  = useMemo(() => makeRainGeo(5000,  320, -170, 260, 0.22, 0.62, 0.50, 1.20), []);
+  // Near layer: tighter around rooftop, elongated streaks, perspective-sized
+  const nearGeo = useMemo(() => makeRainGeo(15000, 190,  -20, 130, 0.42, 1.62, 0.72, 1.84), []);
+
+  useFrame((state, dt) => {
+    const t    = state.clock.elapsedTime;
+    // Smooth compound wind gusts with slow directional drift
+    const gust = 0.55 + 0.45 * Math.sin(t * 0.41) + 0.28 * Math.abs(Math.sin(t * 1.12));
+    const wx   = (Math.sin(t * 0.23) * 0.85 + Math.sin(t * 0.11 + 1.3) * 0.55) * gust;
+    const wz   = (Math.cos(t * 0.17 + 0.7) * 0.32 + Math.sin(t * 0.29) * 0.22) * gust;
+    for (const m of [farMat, nearMat]) {
+      m.uniforms.uTime.value  += dt;
+      m.uniforms.uWindX.value  = wx;
+      m.uniforms.uWindZ.value  = wz;
+    }
+  });
+
+  return (
+    <>
+      <points geometry={farGeo}  material={farMat}  frustumCulled={false} />
+      <points geometry={nearGeo} material={nearMat} frustumCulled={false} />
+    </>
+  );
+}
+
+// ─── Splash impacts ───────────────────────────────────────────────────────────
+function SplashParticles() {
+  const COUNT = 2800;
+  const mat   = useMemo(() => new THREE.ShaderMaterial({
+    uniforms: { uTime: { value: 0 } },
+    vertexShader: `
+      attribute float aX;    attribute float aZ;    attribute float aPhase;
+      attribute float aVelX; attribute float aVelY; attribute float aVelZ; attribute float aRate;
+      uniform float uTime;
+      varying float vAlpha;
+      void main() {
+        float t   = fract(aPhase + uTime * aRate);
+        float y   = aVelY * t - 4.5 * t * t;
+        float vis = step(0.002, y);
+        vec4 mvPos  = modelViewMatrix * vec4(aX + aVelX * t, y, aZ + aVelZ * t, 1.0);
+        gl_Position = projectionMatrix * mvPos;
+        float dist  = max(1.0, -mvPos.z);
+        gl_PointSize = clamp(95.0 / dist, 0.5, 3.8);
+        vAlpha = (1.0 - t) * smoothstep(0.0, 0.07, t) * vis * 0.58;
+      }
+    `,
+    fragmentShader: `
+      varying float vAlpha;
+      void main() {
+        float r     = length(gl_PointCoord - 0.5);
+        float alpha = (1.0 - smoothstep(0.05, 0.5, r)) * vAlpha;
+        if (alpha < 0.004) discard;
+        gl_FragColor = vec4(0.76, 0.89, 1.0, alpha);
+      }
+    `,
+    transparent: true, depthWrite: false,
+  }), []);
+
+  const geo = useMemo(() => {
+    const g      = new THREE.BufferGeometry();
+    const aX     = new Float32Array(COUNT); const aZ     = new Float32Array(COUNT);
+    const aPhase = new Float32Array(COUNT); const aVelX  = new Float32Array(COUNT);
+    const aVelY  = new Float32Array(COUNT); const aVelZ  = new Float32Array(COUNT);
+    const aRate  = new Float32Array(COUNT); const pos    = new Float32Array(COUNT * 3);
     for (let i = 0; i < COUNT; i++) {
-      pos[i*3]=(Math.random()-0.5)*140; pos[i*3+1]=Math.random()*65; pos[i*3+2]=(Math.random()-0.5)*140;
-      aY0[i]=Math.random()*65; aXZ[i]=Math.random()*Math.PI*2;
+      aX[i]     = (Math.random() - 0.5) * 112;
+      aZ[i]     = (Math.random() - 0.5) * 112 - 20;
+      aPhase[i] = Math.random();
+      const ang  = Math.random() * Math.PI * 2;
+      const h    = Math.random() * 0.65;
+      aVelX[i]  = Math.cos(ang) * h;
+      aVelZ[i]  = Math.sin(ang) * h;
+      aVelY[i]  = 0.45 + Math.random() * 1.85;
+      aRate[i]  = 0.35 + Math.random() * 0.85;
+      pos[i*3]  = aX[i]; pos[i*3+2] = aZ[i];
     }
     g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-    g.setAttribute('aY0',      new THREE.BufferAttribute(aY0, 1));
-    g.setAttribute('aXZ',      new THREE.BufferAttribute(aXZ, 1));
+    g.setAttribute('aX',     new THREE.BufferAttribute(aX,    1));
+    g.setAttribute('aZ',     new THREE.BufferAttribute(aZ,    1));
+    g.setAttribute('aPhase', new THREE.BufferAttribute(aPhase,1));
+    g.setAttribute('aVelX',  new THREE.BufferAttribute(aVelX, 1));
+    g.setAttribute('aVelY',  new THREE.BufferAttribute(aVelY, 1));
+    g.setAttribute('aVelZ',  new THREE.BufferAttribute(aVelZ, 1));
+    g.setAttribute('aRate',  new THREE.BufferAttribute(aRate, 1));
     return g;
   }, []);
-  useFrame((_, dt) => { if (matRef.current) matRef.current.uTime += dt; });
-  return <points geometry={geo}><rainMaterial ref={matRef} transparent depthWrite={false} /></points>;
+
+  useFrame((_, dt) => { mat.uniforms.uTime.value += dt; });
+  return <points geometry={geo} material={mat} frustumCulled={false} />;
+}
+
+// ─── Roof edge drips ──────────────────────────────────────────────────────────
+function RoofDrips() {
+  const COUNT = 600;
+  const mat   = useMemo(() => new THREE.ShaderMaterial({
+    uniforms: { uTime: { value: 0 } },
+    vertexShader: `
+      attribute float aX; attribute float aZ;
+      attribute float aPhase; attribute float aSpeed;
+      uniform float uTime;
+      varying float vAlpha;
+      void main() {
+        float t    = fract(aPhase + uTime * aSpeed);
+        float y    = 1.8 - t * 14.0;
+        vec4 mvPos = modelViewMatrix * vec4(aX, y, aZ, 1.0);
+        gl_Position = projectionMatrix * mvPos;
+        float dist  = max(1.0, -mvPos.z);
+        gl_PointSize = clamp(65.0 / dist, 0.4, 3.5);
+        vAlpha = smoothstep(0.0, 0.06, t) * (1.0 - smoothstep(0.84, 1.0, t)) * 0.68;
+      }
+    `,
+    fragmentShader: `
+      varying float vAlpha;
+      void main() {
+        vec2  uv    = gl_PointCoord * 2.0 - 1.0;
+        float xMask = 1.0 - smoothstep(0.0, 1.0, abs(uv.x) * 4.2);
+        float yMask = 1.0 - smoothstep(-0.8, 1.1, uv.y);
+        float alpha = xMask * yMask * vAlpha;
+        if (alpha < 0.004) discard;
+        gl_FragColor = vec4(0.64, 0.80, 0.96, alpha);
+      }
+    `,
+    transparent: true, depthWrite: false,
+  }), []);
+
+  const geo = useMemo(() => {
+    const g      = new THREE.BufferGeometry();
+    const aX     = new Float32Array(COUNT); const aZ     = new Float32Array(COUNT);
+    const aPhase = new Float32Array(COUNT); const aSpeed = new Float32Array(COUNT);
+    const pos    = new Float32Array(COUNT * 3);
+    for (let i = 0; i < COUNT; i++) {
+      const edge = Math.floor(Math.random() * 4);
+      if      (edge === 0) { aX[i] = (Math.random()-0.5)*118; aZ[i] =  38.0; }
+      else if (edge === 1) { aX[i] = (Math.random()-0.5)*118; aZ[i] = -79.0; }
+      else if (edge === 2) { aX[i] = -59.0; aZ[i] = -79 + Math.random()*117; }
+      else                 { aX[i] =  59.0; aZ[i] = -79 + Math.random()*117; }
+      aPhase[i] = Math.random();
+      aSpeed[i] = 0.11 + Math.random() * 0.26;
+      pos[i*3]  = aX[i]; pos[i*3+1] = 1.8; pos[i*3+2] = aZ[i];
+    }
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    g.setAttribute('aX',     new THREE.BufferAttribute(aX,    1));
+    g.setAttribute('aZ',     new THREE.BufferAttribute(aZ,    1));
+    g.setAttribute('aPhase', new THREE.BufferAttribute(aPhase,1));
+    g.setAttribute('aSpeed', new THREE.BufferAttribute(aSpeed,1));
+    return g;
+  }, []);
+
+  useFrame((_, dt) => { mat.uniforms.uTime.value += dt; });
+  return <points geometry={geo} material={mat} frustumCulled={false} />;
 }
 
 // ─── Steam from HVAC / vents ──────────────────────────────────────────────────
@@ -789,6 +1006,100 @@ function Rooftop() {
   );
 }
 
+// ─── Puddle ripples ───────────────────────────────────────────────────────────
+function PuddleRipples() {
+  // Matches the puddle positions defined in Rooftop: [x, z, sizeScale]
+  const PUDDLES: [number, number, number][] = [
+    [3,6,0.4], [-7,-12,0.55], [12,-8,0.3], [-14,15,0.5],
+    [20,3,0.45], [-3,-28,0.5], [8,-30,0.35],
+  ];
+  const mat = useMemo(() => new THREE.ShaderMaterial({
+    uniforms: { uTime: { value: 0 } },
+    vertexShader: `
+      varying vec2 vUv;
+      void main() {
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform float uTime;
+      varying vec2 vUv;
+      void main() {
+        vec2  uv = vUv - 0.5;
+        float d  = length(uv) * 2.0;
+        if (d > 1.0) discard;
+        float ring = 0.0;
+        for (int i = 0; i < 4; i++) {
+          float phase = fract(uTime * 0.42 + float(i) * 0.25);
+          float r     = phase * 0.94;
+          float w     = 0.020 + phase * 0.016;
+          ring += (1.0 - smoothstep(0.0, w, abs(d - r))) * (1.0 - phase);
+        }
+        float alpha = ring * (1.0 - smoothstep(0.62, 1.0, d)) * 0.52;
+        if (alpha < 0.004) discard;
+        gl_FragColor = vec4(0.56, 0.72, 0.90, alpha);
+      }
+    `,
+    transparent: true, depthWrite: false, side: THREE.DoubleSide,
+  }), []);
+
+  useFrame((_, dt) => { mat.uniforms.uTime.value += dt; });
+
+  return (
+    <group>
+      {PUDDLES.map(([px, pz, sc], i) => (
+        <mesh key={i} position={[px, 0.04, pz]} rotation={[-Math.PI/2, 0, 0]} material={mat}>
+          <circleGeometry args={[3 * sc + 1.5, 32]} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
+// ─── Thin water film flowing across rooftop ───────────────────────────────────
+function WaterFlow() {
+  const mat = useMemo(() => new THREE.ShaderMaterial({
+    uniforms: { uTime: { value: 0 } },
+    vertexShader: `
+      varying vec2 vUv;
+      void main() {
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform float uTime;
+      varying vec2 vUv;
+      float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+      float noise(vec2 p) {
+        vec2 i = floor(p); vec2 f = fract(p);
+        f = f * f * (3.0 - 2.0 * f);
+        return mix(mix(hash(i),              hash(i + vec2(1.0, 0.0)), f.x),
+                   mix(hash(i + vec2(0.0,1.0)), hash(i + vec2(1.0,1.0)), f.x), f.y);
+      }
+      void main() {
+        vec2  flow = vec2(0.038, 0.055);
+        float n1   = noise(vUv * 9.0  + flow * uTime);
+        float n2   = noise(vUv * 6.0  + flow * uTime * 0.65 + vec2(1.7, 0.9));
+        float riv  = pow(abs(sin((vUv.x * 24.0 + vUv.y * 9.0 + uTime * 0.12) * 3.14159)), 9.0);
+        float alpha = n1 * n2 * 0.055 + riv * 0.040;
+        if (alpha < 0.004) discard;
+        gl_FragColor = vec4(0.50, 0.65, 0.85, alpha);
+      }
+    `,
+    transparent: true, depthWrite: false,
+  }), []);
+
+  useFrame((_, dt) => { mat.uniforms.uTime.value += dt; });
+
+  return (
+    <mesh position={[0, 0.03, -20]} rotation={[-Math.PI/2, 0, 0]} material={mat}>
+      <planeGeometry args={[118, 118]} />
+    </mesh>
+  );
+}
+
 // ─── Scene root ───────────────────────────────────────────────────────────────
 export function RooftopScene() {
   return (
@@ -818,7 +1129,11 @@ export function RooftopScene() {
         <Cars />
         <Aircraft />
         <Steam />
-        <Rain />
+        <CinematicRain />
+        <SplashParticles />
+        <RoofDrips />
+        <PuddleRipples />
+        <WaterFlow />
       </Canvas>
     </motion.div>
   );
