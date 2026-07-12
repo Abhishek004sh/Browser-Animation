@@ -1401,6 +1401,293 @@ function DynamicWeather() {
   );
 }
 
+// ─── Characters — cinematic idle life ────────────────────────────────────────
+//
+// Each figure sits on the existing back ledge (z=-79, top y=1.8), legs
+// hanging over the far side toward the city.  Idle motion uses two separate
+// systems that never conflict:
+//   • GSAP  → mutates a plain `idle` data object (non-repetitive random targets)
+//   • useFrame → reads that data object + adds breathing & wind, writes to refs
+//
+// Only the Characters component and its helpers below are new.
+// Nothing above this line is touched.
+//
+
+// Schedules one GSAP tween targeting a plain-object key, then reschedules
+// itself on completion — producing genuinely non-repetitive idle drift.
+function scheduleIdle(
+  obj:      Record<string, number>,
+  key:      string,
+  range:    number,
+  minDur:   number,
+  maxDur:   number,
+  minDelay: number,
+  maxDelay: number,
+  alive:    { v: boolean },
+) {
+  if (!alive.v) return;
+  gsap.to(obj, {
+    [key]:    (Math.random() - 0.5) * 2 * range,
+    duration: minDur + Math.random() * (maxDur - minDur),
+    delay:    minDelay + Math.random() * (maxDelay - minDelay),
+    ease:     'power2.inOut',
+    onComplete() { scheduleIdle(obj, key, range, minDur, maxDur, minDelay, maxDelay, alive); },
+  });
+}
+
+function CharacterFigure({
+  posX, isWoman, breathPhase,
+}: { posX: number; isWoman: boolean; breathPhase: number }) {
+
+  // Three.js group refs — never touched by GSAP directly
+  const rootRef  = useRef<THREE.Group>(null);
+  const torsoRef = useRef<THREE.Group>(null);
+  const headRef  = useRef<THREE.Group>(null);
+  const hairRef  = useRef<THREE.Group>(null);
+  const lArmRef  = useRef<THREE.Group>(null);
+  const rArmRef  = useRef<THREE.Group>(null);
+  const lHndRef  = useRef<THREE.Group>(null);
+  const rHndRef  = useRef<THREE.Group>(null);
+
+  // Plain data object — GSAP writes here, useFrame reads here
+  const idle = useRef<Record<string, number>>({
+    headX: 0, headY: 0, headZ: 0,
+    torsoY: 0, torsoZ: 0, torsoOfsY: 0,
+    lArmZ: 0, rArmZ: 0,
+    lHndZ: 0, rHndZ: 0,
+    rootOfsY: 0,
+  });
+
+  useEffect(() => {
+    const alive = { v: true };
+    const id    = idle.current;
+
+    // [key, range, minDur, maxDur, minDelay, maxDelay]
+    // Staggered starts ensure the figure doesn't move all parts simultaneously.
+    const cfg: [string, number, number, number, number, number, number][] = [
+      ['headX',    0.040, 1.5, 4.0, 1.0, 5.0, 0.0],
+      ['headY',    0.080, 2.0, 5.5, 1.5, 6.5, 0.6],
+      ['headZ',    0.025, 2.5, 6.0, 2.0, 7.5, 1.1],
+      ['torsoY',   0.055, 3.0, 7.5, 2.0, 8.5, 1.5],
+      ['torsoZ',   0.032, 3.5, 7.0, 2.5, 9.0, 2.0],
+      ['torsoOfsY',0.045, 4.0, 9.0, 3.0, 9.5, 2.8],
+      ['lArmZ',    0.060, 2.0, 5.0, 1.0, 6.0, 0.4],
+      ['rArmZ',    0.060, 2.0, 5.0, 1.5, 6.5, 0.9],
+      ['lHndZ',    0.050, 1.5, 3.5, 2.0, 7.5, 1.8],
+      ['rHndZ',    0.050, 1.5, 3.5, 2.5, 8.0, 2.3],
+      ['rootOfsY', 0.030, 5.0,11.0, 4.0,10.0, 3.5],
+    ];
+
+    cfg.forEach(([key, range, mn, mx, dMn, dMx, start]) => {
+      setTimeout(
+        () => scheduleIdle(id, key, range, mn, mx, dMn, dMx, alive),
+        (start + Math.random() * 1.5) * 1000,
+      );
+    });
+
+    return () => {
+      alive.v = false;
+      gsap.killTweensOf(id);
+    };
+  }, []);
+
+  useFrame((state) => {
+    const t  = state.clock.elapsedTime;
+    const id = idle.current;
+
+    // Wind signal — mirrors rain shader's sine-wave wind
+    const windX = Math.sin(t * 0.43) * 0.28 + Math.sin(t * 0.71 + 1.3) * 0.12;
+
+    // ── Breathing ────────────────────────────────────────────────────────────
+    const rate   = isWoman ? 1.05 : 0.88;
+    const breathe = Math.sin(t * rate + breathPhase);
+
+    if (torsoRef.current) {
+      torsoRef.current.scale.y      = 1.0 + breathe * 0.011;
+      torsoRef.current.position.y   = 2.58 + id.torsoOfsY + breathe * 0.013;
+      torsoRef.current.rotation.y   = id.torsoY;
+      torsoRef.current.rotation.z   = id.torsoZ;
+    }
+
+    // ── Head ─────────────────────────────────────────────────────────────────
+    if (headRef.current) {
+      headRef.current.rotation.x = id.headX;
+      headRef.current.rotation.y = id.headY;
+      headRef.current.rotation.z = id.headZ;
+    }
+
+    // ── Hair — wind-reactive (smooth lag via lerp) ────────────────────────────
+    if (hairRef.current) {
+      const ws = Math.max(0.25, W.phase);
+      hairRef.current.rotation.z += (windX * 0.11 * ws - hairRef.current.rotation.z) * 0.055;
+      hairRef.current.rotation.x += (windX * 0.03 * ws - hairRef.current.rotation.x) * 0.040;
+    }
+
+    // ── Arms + cloth wind ────────────────────────────────────────────────────
+    const sleeveWind = windX * 0.013 * W.phase;
+    if (lArmRef.current) {
+      lArmRef.current.rotation.z  =  Math.PI / 6 + id.lArmZ;
+      lArmRef.current.rotation.x  = sleeveWind;
+    }
+    if (rArmRef.current) {
+      rArmRef.current.rotation.z  = -Math.PI / 6 + id.rArmZ;
+      rArmRef.current.rotation.x  = sleeveWind;
+    }
+    if (lHndRef.current) { lHndRef.current.rotation.z  =  Math.PI / 10 + id.lHndZ; }
+    if (rHndRef.current) { rHndRef.current.rotation.z  = -Math.PI / 10 + id.rHndZ; }
+
+    // ── Weight shift ─────────────────────────────────────────────────────────
+    if (rootRef.current) { rootRef.current.position.y = id.rootOfsY; }
+  });
+
+  // Palette
+  const skin  = isWoman ? '#d4956e' : '#bf8555';
+  const top   = isWoman ? '#b2aaa0' : '#1c2440';   // coat vs hoodie
+  const pants = '#1e2d45';
+  const hair  = isWoman ? '#7a5e3a' : '#201c18';
+  const shoe  = isWoman ? '#7a6a88' : '#d0c8b8';
+  const SW    = isWoman ? 0.46 : 0.50;             // shoulder half-width
+
+  const SEAT = 1.8;  // ledge top-surface y
+
+  return (
+    <group ref={rootRef} position={[posX, 0, -79]}>
+
+      {/* ── Legs hanging over the back ledge toward the city ─────────────── */}
+      {([-0.14, 0.14] as const).map((lx, si) => (
+        <group key={si}>
+          {/* Thigh — angled slightly downward in −z */}
+          <mesh position={[lx, SEAT - 0.07, -0.52]}
+                rotation={[0.28, 0, si === 0 ? 0.04 : -0.04]}>
+            <boxGeometry args={[0.22, 0.46, 0.24]} />
+            <meshStandardMaterial color={pants} roughness={0.85} />
+          </mesh>
+          {/* Shin — hangs vertically past ledge edge */}
+          <mesh position={[lx, SEAT - 0.70, -0.94]}>
+            <boxGeometry args={[0.18, 0.58, 0.18]} />
+            <meshStandardMaterial color={pants} roughness={0.85} />
+          </mesh>
+          {/* Shoe */}
+          <mesh position={[lx, SEAT - 1.04, -0.90]}>
+            <boxGeometry args={[0.20, 0.15, 0.36]} />
+            <meshStandardMaterial color={shoe} roughness={0.72} />
+          </mesh>
+        </group>
+      ))}
+
+      {/* ── Torso group — breathing + posture target applied in useFrame ─── */}
+      <group ref={torsoRef} position={[0, 2.58, 0]}>
+
+        {/* Body */}
+        <mesh>
+          <boxGeometry args={[isWoman ? 0.50 : 0.56, 1.10, 0.32]} />
+          <meshStandardMaterial color={top} roughness={0.88} />
+        </mesh>
+
+        {/* Left shoulder + upper arm */}
+        <group ref={lArmRef} position={[-SW, 0.22, 0]}>
+          <mesh>
+            <boxGeometry args={[0.19, 0.56, 0.20]} />
+            <meshStandardMaterial color={top} roughness={0.88} />
+          </mesh>
+          {/* Forearm + hand */}
+          <group ref={lHndRef} position={[-0.04, -0.46, 0]}>
+            <mesh>
+              <boxGeometry args={[0.16, 0.44, 0.17]} />
+              <meshStandardMaterial color={top} roughness={0.88} />
+            </mesh>
+            <mesh position={[0, -0.30, 0]}>
+              <boxGeometry args={[0.18, 0.22, 0.15]} />
+              <meshStandardMaterial color={skin} roughness={0.76} />
+            </mesh>
+          </group>
+        </group>
+
+        {/* Right shoulder + upper arm */}
+        <group ref={rArmRef} position={[SW, 0.22, 0]}>
+          <mesh>
+            <boxGeometry args={[0.19, 0.56, 0.20]} />
+            <meshStandardMaterial color={top} roughness={0.88} />
+          </mesh>
+          <group ref={rHndRef} position={[0.04, -0.46, 0]}>
+            <mesh>
+              <boxGeometry args={[0.16, 0.44, 0.17]} />
+              <meshStandardMaterial color={top} roughness={0.88} />
+            </mesh>
+            <mesh position={[0, -0.30, 0]}>
+              <boxGeometry args={[0.18, 0.22, 0.15]} />
+              <meshStandardMaterial color={skin} roughness={0.76} />
+            </mesh>
+          </group>
+        </group>
+
+        {/* Neck */}
+        <mesh position={[0, 0.64, 0.02]}>
+          <cylinderGeometry args={[0.10, 0.12, 0.22, 8]} />
+          <meshStandardMaterial color={skin} roughness={0.76} />
+        </mesh>
+
+        {/* Head group — idle rotations applied in useFrame */}
+        <group ref={headRef} position={[0, 0.90, 0.02]}>
+          <mesh>
+            <sphereGeometry args={[isWoman ? 0.27 : 0.29, 12, 10]} />
+            <meshStandardMaterial color={skin} roughness={0.80} />
+          </mesh>
+
+          {/* Hair — wind-reactive, pivot at scalp */}
+          <group ref={hairRef} position={[0, 0.08, 0]}>
+            {isWoman ? (
+              <>
+                {/* Crown */}
+                <mesh position={[0, 0.10, -0.04]}>
+                  <sphereGeometry args={[0.26, 10, 8]} />
+                  <meshStandardMaterial color={hair} roughness={0.92} />
+                </mesh>
+                {/* Mid-length fall */}
+                <mesh position={[0, -0.20, -0.14]}
+                      scale={[0.85, 1.35, 0.72]}>
+                  <sphereGeometry args={[0.22, 8, 6]} />
+                  <meshStandardMaterial color={hair} roughness={0.92} />
+                </mesh>
+                {/* Ends */}
+                <mesh position={[0, -0.48, -0.10]}
+                      scale={[0.70, 1.10, 0.62]}>
+                  <sphereGeometry args={[0.18, 8, 6]} />
+                  <meshStandardMaterial color={hair} roughness={0.92} />
+                </mesh>
+              </>
+            ) : (
+              <>
+                {/* Short rain-soaked hair */}
+                <mesh position={[0, 0.12, -0.02]}>
+                  <sphereGeometry args={[0.26, 10, 8]} />
+                  <meshStandardMaterial color={hair} roughness={0.94} />
+                </mesh>
+                <mesh position={[0, 0.08, 0.10]}
+                      scale={[0.88, 0.48, 0.78]}>
+                  <sphereGeometry args={[0.22, 8, 6]} />
+                  <meshStandardMaterial color={hair} roughness={0.94} />
+                </mesh>
+              </>
+            )}
+          </group>
+        </group>
+      </group>
+    </group>
+  );
+}
+
+function Characters() {
+  return (
+    <group>
+      {/* Man — left, dark hoodie */}
+      <CharacterFigure posX={-1.8} isWoman={false} breathPhase={0.0} />
+      {/* Woman — right, light coat, breath out of phase */}
+      <CharacterFigure posX={ 1.2} isWoman={true}  breathPhase={1.4} />
+    </group>
+  );
+}
+
 // ─── Scene root ───────────────────────────────────────────────────────────────
 export function RooftopScene() {
   return (
@@ -1422,6 +1709,7 @@ export function RooftopScene() {
         <directionalLight position={[0,-10,0]} intensity={0.08} color="#221100" />
 
         <CameraRig />
+        <Characters />
         <AtmosphericHaze />
         <Rooftop />
         <Skyline />
