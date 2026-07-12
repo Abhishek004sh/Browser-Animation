@@ -1,5 +1,5 @@
 import React, { useMemo, useRef, useEffect } from 'react';
-import { Canvas, useFrame, extend } from '@react-three/fiber';
+import { Canvas, useFrame, extend, useThree } from '@react-three/fiber';
 import gsap from 'gsap';
 import * as THREE from 'three';
 import { motion } from 'framer-motion';
@@ -933,17 +933,17 @@ function Rooftop() {
 
   return (
     <group>
-      {/* Concrete floor */}
-      <mesh rotation={[-Math.PI/2,0,0]} position={[0,0,-20]}>
+      {/* Concrete floor — wet roughness so lights produce specular highlights */}
+      <mesh rotation={[-Math.PI/2,0,0]} position={[0,0,-20]} receiveShadow>
         <planeGeometry args={[120,120]} />
-        <meshStandardMaterial color="#18191d" roughness={0.97} metalness={0.0} />
+        <meshStandardMaterial color="#18191d" roughness={0.52} metalness={0.06} />
       </mesh>
 
-      {/* Ledges */}
-      <mesh position={[0,0.9,38]}><boxGeometry args={[120,1.8,1.2]} /><meshStandardMaterial color="#212328" roughness={0.95} /></mesh>
-      <mesh position={[-59,0.9,-20]}><boxGeometry args={[1.2,1.8,120]} /><meshStandardMaterial color="#212328" roughness={0.95} /></mesh>
-      <mesh position={[59,0.9,-20]}><boxGeometry args={[1.2,1.8,120]} /><meshStandardMaterial color="#212328" roughness={0.95} /></mesh>
-      <mesh position={[0,0.9,-79]}><boxGeometry args={[120,1.8,1.2]} /><meshStandardMaterial color="#212328" roughness={0.95} /></mesh>
+      {/* Ledges — cast soft shadows onto the deck */}
+      <mesh castShadow position={[0,0.9,38]}><boxGeometry args={[120,1.8,1.2]} /><meshStandardMaterial color="#212328" roughness={0.95} /></mesh>
+      <mesh castShadow position={[-59,0.9,-20]}><boxGeometry args={[1.2,1.8,120]} /><meshStandardMaterial color="#212328" roughness={0.95} /></mesh>
+      <mesh castShadow position={[59,0.9,-20]}><boxGeometry args={[1.2,1.8,120]} /><meshStandardMaterial color="#212328" roughness={0.95} /></mesh>
+      <mesh castShadow position={[0,0.9,-79]}><boxGeometry args={[120,1.8,1.2]} /><meshStandardMaterial color="#212328" roughness={0.95} /></mesh>
 
       {/* Puddles */}
       {([[3,6,0.4],[-7,-12,0.55],[12,-8,0.3],[-14,15,0.5],[20,3,0.45],[-3,-28,0.5],[8,-30,0.35]] as [number,number,number][]).map(([px,pz,sc],i)=>(
@@ -1097,10 +1097,15 @@ function PuddleRipples() {
         float alpha = ring * (1.0 - smoothstep(0.62, 1.0, d)) * 0.52;
         if (alpha < 0.004) discard;
         float lit = 1.0 + uLightning * 3.5;
+        // Blend moonlight cool-blue with warm city bounce based on slow oscillation
+        vec3 moon = vec3(0.56, 0.72, 0.90);
+        vec3 city = vec3(0.85, 0.50, 0.20);
+        float cityAmt = 0.28 + 0.22 * sin(uTime * 0.11);
+        vec3 refl = mix(moon, city, cityAmt) * lit;
         gl_FragColor = vec4(
-          min(0.56 * lit, 1.0),
-          min(0.72 * lit, 1.0),
-          min(0.90 * lit, 1.0),
+          min(refl.r, 1.0),
+          min(refl.g, 1.0),
+          min(refl.b, 1.0),
           min(alpha * (1.0 + uLightning * 1.8), 1.0)
         );
       }
@@ -1155,7 +1160,12 @@ function WaterFlow() {
         float alpha = min(base * (1.0 + uLightning * 4.0), 0.95);
         if (alpha < 0.004) discard;
         float lit = 1.0 + uLightning * 2.8;
-        gl_FragColor = vec4(min(0.50*lit,1.0), min(0.65*lit,1.0), min(0.85*lit,1.0), alpha);
+        // Water film reflects both moonlight and warm city glow
+        vec3 moon = vec3(0.50, 0.65, 0.85);
+        vec3 city = vec3(0.80, 0.48, 0.20);
+        float cityAmt = 0.25 + 0.20 * sin(uTime * 0.09 + 1.3);
+        vec3 col = mix(moon, city, cityAmt) * lit;
+        gl_FragColor = vec4(min(col.r,1.0), min(col.g,1.0), min(col.b,1.0), alpha);
       }
     `,
     transparent: true, depthWrite: false,
@@ -1272,7 +1282,10 @@ function BuildingFog() {
         float ex  = 1.0 - smoothstep(0.40, 0.50, abs(vUv.x - 0.5));
         float alpha = fog * ey * ex * 0.30;
         if (alpha < 0.006) discard;
-        gl_FragColor = vec4(0.10, 0.13, 0.20, alpha);
+        // Warm city glow scatters into the lower fog banks; cool blue higher up
+        float warmBlend = smoothstep(0.55, 0.12, vUv.y) * 0.50;
+        vec3 fogCol = mix(vec3(0.10, 0.13, 0.20), vec3(0.22, 0.11, 0.06), warmBlend);
+        gl_FragColor = vec4(fogCol, alpha);
       }
     `,
     transparent: true, depthWrite: false,
@@ -1689,6 +1702,61 @@ function Characters() {
 }
 
 // ─── Scene root ───────────────────────────────────────────────────────────────
+// ─── Renderer config — ACES filmic tone mapping, PCFSoft shadows ──────────────
+function RendererConfig() {
+  const { gl } = useThree();
+  useEffect(() => {
+    gl.toneMapping         = THREE.ACESFilmicToneMapping;
+    gl.toneMappingExposure = 0.85;
+    gl.shadowMap.enabled   = true;
+    gl.shadowMap.type      = THREE.PCFSoftShadowMap;
+  }, [gl]);
+  return null;
+}
+
+// ─── Cinematic lighting — moon, city bounce, rim lights, city fill ────────────
+// Extends the scene-level lights; does NOT duplicate ambient or existing points.
+function CinematicLighting() {
+  const moonRef = useRef<THREE.DirectionalLight>(null);
+
+  useEffect(() => {
+    if (!moonRef.current) return;
+    const s = moonRef.current.shadow;
+    // Tight orthographic frustum covering just the rooftop deck
+    s.camera.left   = -75;
+    s.camera.right  =  75;
+    s.camera.top    =  80;
+    s.camera.bottom = -80;
+    s.camera.near   =  10;
+    s.camera.far    =  260;
+    s.mapSize.set(1024, 1024);
+    s.radius        =  3.5;   // PCFSoft blur radius
+    s.bias          = -0.0006;
+    s.camera.updateProjectionMatrix();
+  }, []);
+
+  return (
+    <>
+      {/* Primary moonlight — soft cool-blue key, replaces old Canvas directional */}
+      <directionalLight
+        ref={moonRef}
+        position={[-25, 100, 45]}
+        intensity={0.72}
+        color="#aac8f0"
+        castShadow
+      />
+      {/* City glow — warm orange directional rising from the skyline below */}
+      <directionalLight position={[0, -6, -95]} intensity={0.20} color="#b04c18" />
+      {/* Character rim — cool backlight left, separates figures from dark sky */}
+      <pointLight position={[-9, 8, -71]} color="#3a77c4" intensity={1.6} distance={30} decay={2} />
+      {/* Character rim — cool backlight right */}
+      <pointLight position={[ 9, 8, -71]} color="#2d5ea8" intensity={1.2} distance={28} decay={2} />
+      {/* City fill — diffuse warm uplight from below the back ledge */}
+      <pointLight position={[0, -3, -58]} color="#b04010" intensity={0.9} distance={90} decay={1.4} />
+    </>
+  );
+}
+
 export function RooftopScene() {
   return (
     <motion.div
@@ -1704,9 +1772,14 @@ export function RooftopScene() {
         <color attach="background" args={['#03050a']} />
         <fogExp2 attach="fog" args={['#03050a', 0.011]} />
 
-        <ambientLight intensity={0.18} color="#3355aa" />
-        <directionalLight position={[60,80,30]} intensity={0.55} color="#99bbee" />
-        <directionalLight position={[0,-10,0]} intensity={0.08} color="#221100" />
+        {/* Scene fill — faint cool ambient keeps shadow areas readable */}
+        <ambientLight intensity={0.15} color="#1a2a55" />
+        {/* Sky/ground hemisphere — city ember below, deep night blue above */}
+        <hemisphereLight args={['#0c1830', '#2a0e04', 0.28]} />
+        {/* CinematicLighting: moon directional (castShadow), city bounce, rims, city fill */}
+        <CinematicLighting />
+        {/* Renderer: ACESFilmic tone mapping + PCFSoft shadow maps */}
+        <RendererConfig />
 
         <CameraRig />
         <Characters />
