@@ -117,6 +117,9 @@ function Steam() {
   const EMITTERS: [number, number, number][] = [
     [-16, 3.6, -14], [11, 3.2, -5], [25, 2.7, -18],
     [20, 13.0, -28], [-5, 1.3, -36], [33, 1.3, -46],
+    // Distant skyline rooftops
+    [-88, 55, -115], [105, 70, -135], [72, 112, -188],
+    [-60, 40, -95],  [148, 87, -165], [-45, 64, -210],
   ];
   const PER = 38;
   const geo = useMemo(() => {
@@ -502,6 +505,95 @@ function AtmosphericHaze() {
   );
 }
 
+// ─── Distant skyline billboards — instanced, GPU color-cycling ────────────────
+function makeDistantBillboardMaterial() {
+  const mat = new THREE.ShaderMaterial({
+    uniforms: { uTime: { value: 0 } },
+    vertexShader: `
+      attribute float aPhase;
+      attribute vec3  aCol1;
+      attribute vec3  aCol2;
+      uniform  float  uTime;
+      varying  vec3   vCol;
+      void main() {
+        float t     = 0.5 + 0.5 * sin(uTime * 0.22 + aPhase * 6.28318);
+        float flick = step(0.94, fract(aPhase * 17.3 + uTime * (0.08 + aPhase * 0.12)));
+        vCol = mix(aCol1, aCol2, max(t, flick));
+        gl_Position = projectionMatrix * modelViewMatrix * instanceMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      varying vec3 vCol;
+      void main() { gl_FragColor = vec4(vCol, 1.0); }
+    `,
+    side: THREE.FrontSide,
+  });
+  (mat as any).toneMapped = false;
+  return mat;
+}
+
+function DistantBillboards() {
+  // [x, y, z, width, height] — placed on distant building facades
+  const BOARDS: [number, number, number, number, number][] = [
+    [-88,  52, -115, 30, 14],
+    [105,  68, -135, 26, 12],
+    [-60,  38,  -95, 22, 10],
+    [145,  85, -165, 32, 16],
+    [-130, 44, -105, 20, 10],
+    [ 72, 110, -190, 28, 14],
+    [ -45, 62, -210, 24, 12],
+    [190,  50, -130, 18,  9],
+  ];
+  const COLORS: [string, string][] = [
+    ['#ff3300', '#ff9900'],
+    ['#00ccff', '#0044ff'],
+    ['#ff00aa', '#ffff00'],
+    ['#00ff88', '#00aaff'],
+    ['#ff6600', '#ff0055'],
+    ['#44ff00', '#00ffcc'],
+    ['#ff2288', '#aa00ff'],
+    ['#ffcc00', '#ff4400'],
+  ];
+
+  const COUNT  = BOARDS.length;
+  const mat    = useMemo(() => makeDistantBillboardMaterial(), []);
+  const meshRef = useRef<THREE.InstancedMesh>(null);
+
+  useEffect(() => {
+    if (!meshRef.current) return;
+    const dummy = new THREE.Object3D();
+    const col1  = new Float32Array(COUNT * 3);
+    const col2  = new Float32Array(COUNT * 3);
+    const phase = new Float32Array(COUNT);
+    const c1 = new THREE.Color();
+    const c2 = new THREE.Color();
+    BOARDS.forEach(([x, y, z, w, h], i) => {
+      dummy.position.set(x, y, z);
+      dummy.scale.set(w, h, 1);
+      dummy.rotation.set(0, 0, 0);
+      dummy.updateMatrix();
+      meshRef.current!.setMatrixAt(i, dummy.matrix);
+      c1.set(COLORS[i % COLORS.length][0]);
+      c2.set(COLORS[i % COLORS.length][1]);
+      col1[i*3]=c1.r; col1[i*3+1]=c1.g; col1[i*3+2]=c1.b;
+      col2[i*3]=c2.r; col2[i*3+1]=c2.g; col2[i*3+2]=c2.b;
+      phase[i] = Math.random();
+    });
+    meshRef.current.instanceMatrix.needsUpdate = true;
+    meshRef.current.geometry.setAttribute('aPhase', new THREE.InstancedBufferAttribute(phase, 1));
+    meshRef.current.geometry.setAttribute('aCol1',  new THREE.InstancedBufferAttribute(col1, 3));
+    meshRef.current.geometry.setAttribute('aCol2',  new THREE.InstancedBufferAttribute(col2, 3));
+  }, []);
+
+  useFrame((_, dt) => { mat.uniforms.uTime.value += dt; });
+
+  return (
+    <instancedMesh ref={meshRef} args={[undefined, undefined, COUNT]} material={mat}>
+      <planeGeometry args={[1, 1]} />
+    </instancedMesh>
+  );
+}
+
 // ─── Rooftop — floor, ledges, details, animated billboards & blinkers ─────────
 function Rooftop() {
   // Billboard material refs for color animation
@@ -513,6 +605,10 @@ function Rooftop() {
   // Antenna blinker light refs
   const ant1Ref = useRef<THREE.PointLight>(null);
   const ant2Ref = useRef<THREE.PointLight>(null);
+
+  // Billboard scan line refs (animated sweep)
+  const scan1Ref = useRef<THREE.Mesh>(null);
+  const scan2Ref = useRef<THREE.Mesh>(null);
 
   useFrame((state) => {
     const t = state.clock.elapsedTime;
@@ -547,6 +643,16 @@ function Rooftop() {
     }
     if (ant2Ref.current) {
       ant2Ref.current.intensity = Math.sin(t * 2.6 + 1.4) > 0.68 ? 3.5 : 0;
+    }
+
+    // Billboard scan lines — sweep from bottom to top of each face
+    if (scan1Ref.current) {
+      // Face center y=12, height=9 → spans 7.5 to 16.5 in group-local space
+      scan1Ref.current.position.y = 7.5 + ((t * 0.38) % 1) * 9.0;
+    }
+    if (scan2Ref.current) {
+      // Face center y=10, height=7 → spans 6.5 to 13.5 in group-local space
+      scan2Ref.current.position.y = 6.5 + ((t * 0.31 + 0.5) % 1) * 7.0;
     }
   });
 
@@ -633,10 +739,10 @@ function Rooftop() {
           <planeGeometry args={[21,9]} />
           <meshBasicMaterial ref={bb1MatRef} color="#ff6600" toneMapped={false} />
         </mesh>
-        {/* Horizontal scan line for billboard animation */}
-        <mesh position={[0,12,0.46]}>
+        {/* Horizontal scan line — animated sweep */}
+        <mesh ref={scan1Ref} position={[0,12,0.46]}>
           <planeGeometry args={[21,0.4]} />
-          <meshBasicMaterial color="#ffffff" transparent opacity={0.08} toneMapped={false} />
+          <meshBasicMaterial color="#ffffff" transparent opacity={0.09} toneMapped={false} />
         </mesh>
         <pointLight ref={bb1LightRef} position={[0,12,6]} intensity={2.5} color="#ff6600" distance={60} decay={2} />
       </group>
@@ -650,6 +756,11 @@ function Rooftop() {
         <mesh position={[0,10,0.38]}>
           <planeGeometry args={[17,7]} />
           <meshBasicMaterial ref={bb2MatRef} color="#00ccff" toneMapped={false} />
+        </mesh>
+        {/* Horizontal scan line — animated sweep */}
+        <mesh ref={scan2Ref} position={[0,10,0.39]}>
+          <planeGeometry args={[17,0.35]} />
+          <meshBasicMaterial color="#ffffff" transparent opacity={0.07} toneMapped={false} />
         </mesh>
         <pointLight ref={bb2LightRef} position={[0,10,5]} intensity={2} color="#00ccff" distance={50} decay={2} />
       </group>
@@ -702,6 +813,7 @@ export function RooftopScene() {
         <AtmosphericHaze />
         <Rooftop />
         <Skyline />
+        <DistantBillboards />
         <BuildingBlinkers />
         <Cars />
         <Aircraft />

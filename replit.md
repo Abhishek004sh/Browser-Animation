@@ -4,12 +4,13 @@ _Replace the heading above with the project's name, and this line with one sente
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
+- **Rooftop Rain animation** — `PORT=5173 BASE_PATH=/ pnpm --filter @workspace/rooftop-rain run dev` (workflow: "Rooftop Rain", port 5173)
+- `pnpm --filter @workspace/api-server run dev` — run the API server (needs `DATABASE_URL`)
 - `pnpm run typecheck` — full typecheck across all packages
 - `pnpm run build` — typecheck + build all packages
 - `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
 - `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
+- Required env (API server): `DATABASE_URL` — Postgres connection string
 
 ## Stack
 
