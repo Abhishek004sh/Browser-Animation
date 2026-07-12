@@ -181,20 +181,21 @@ export const elementAnimations = {
 // Character-level animation variants for kinetic typography
 export const charVariants: Variants = {
   hidden: { opacity: 0, y: 40, rotateX: -40, transformPerspective: 800 },
+  // framer-motion v12: transition inside a variant state requires `as any`
   visible: {
     opacity: 1,
     y: 0,
     rotateX: 0,
     transformPerspective: 800,
     transition: { type: 'spring', stiffness: 400, damping: 25 },
-  },
+  } as any,
 };
 
 export const charContainerVariants: Variants = {
   hidden: {},
   visible: {
     transition: { staggerChildren: 0.03, delayChildren: 0.1 },
-  },
+  } as any,
 };
 
 // Stagger configs
@@ -213,7 +214,7 @@ export const containerVariants: Variants = {
   visible: {
     opacity: 1,
     transition: staggerConfigs.medium,
-  },
+  } as any,
 };
 
 export const itemVariants: Variants = {
@@ -222,7 +223,7 @@ export const itemVariants: Variants = {
     opacity: 1,
     y: 0,
     transition: { duration: 0.5, ease: 'circOut' },
-  },
+  } as any,
 };
 
 // Utilities
