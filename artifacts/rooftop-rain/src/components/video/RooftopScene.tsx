@@ -6,6 +6,7 @@ import { motion } from 'framer-motion';
 import { shaderMaterial } from '@react-three/drei';
 import { EffectComposer, Bloom, DepthOfField, Vignette, ChromaticAberration, Noise, HueSaturation } from '@react-three/postprocessing';
 import { BlendFunction } from 'postprocessing';
+import { RooftopDetails } from './RooftopDetails';
 
 // ─── Shader materials ──────────────────────────────────────────────────────────
 
@@ -1926,6 +1927,7 @@ export function RooftopScene() {
           <Characters />
           <AtmosphericHaze />
           <Rooftop />
+          <RooftopDetails />
           <Skyline />
           <DistantBillboards />
           <BuildingBlinkers />
