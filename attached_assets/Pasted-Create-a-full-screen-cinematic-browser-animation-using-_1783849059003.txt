@@ -1,0 +1,41 @@
+Create a full-screen, cinematic browser animation using HTML, CSS, and JavaScript (Canvas or Three.js if appropriate). There should be no UI, buttons, text, logos, or controls—only the animation.
+
+The scene features two original young adults inspired by the emotional atmosphere and visual style of The Amazing Spider-Man universe. They evoke the feeling of Peter Parker and Gwen Stacy without directly copying the movie actors' exact facial features or designs.
+
+Scene:
+A rainy evening on a quiet New York City rooftop. The city stretches into the distance, with glowing skyscrapers, softly illuminated windows, and blurred traffic lights below. Heavy rain falls continuously, creating ripples in puddles across the rooftop. Occasional flashes of distant lightning briefly illuminate the skyline, followed by a return to the moody blue-gray ambience.
+
+The two characters sit side by side on the edge of the rooftop, legs hanging over the city. They remain mostly still, sharing a peaceful silence. Their body language conveys comfort, trust, and unspoken affection rather than dramatic romance.
+
+The young man wears a casual hoodie, jeans, and sneakers, with rain-soaked hair. The young woman wears a light-colored coat over casual clothing, with long hair gently moving in the wind. Their outfits and overall aesthetic are inspired by grounded, modern New York fashion.
+
+Throughout the animation:
+
+Heavy rain falls naturally with realistic physics.
+Wind subtly moves their clothing and hair.
+The city's lights shimmer through the rain with soft cinematic bokeh.
+Tiny glowing particles drift through the air, adding a dreamlike atmosphere.
+Reflections appear in puddles on the rooftop.
+Distant stars occasionally become visible through breaks in the clouds before fading again.
+The lighting is soft, cool, and cinematic with gentle bloom and volumetric atmosphere.
+
+Camera direction:
+Use slow cinematic close-up transitions. Begin with a wide establishing shot of the rooftop and city, then slowly move to medium shots, close-ups of their expressions, their hands resting beside each other, raindrops hitting the rooftop, reflections in puddles, and the glowing skyline. Camera movements should be extremely smooth and film-like, with subtle depth of field.
+
+Color palette:
+Use the iconic deep blue and muted red tones associated with classic Spider-Man imagery, combined with cool rainy grays. Avoid oversaturation. The scene should feel realistic and emotionally grounded.
+
+Animation behavior:
+The animation should feel alive even when the characters remain still:
+
+Rain intensity varies naturally.
+Clouds drift slowly.
+Wind changes gently over time.
+Lightning appears occasionally.
+City lights flicker subtly.
+Tiny ambient particles continuously float through the frame.
+
+Ending:
+As the animation progresses, the rain gradually softens. The storm begins to clear, revealing a warm orange glow on the horizon. The clouds slowly part, and the first rays of sunset break through, bathing the rooftop and the two characters in soft golden light. The city transforms from cool blue tones into warm amber hues. The final shot lingers on the peaceful pair watching the horizon together before seamlessly transitioning back to the rainy beginning, creating a smooth infinite loop.
+
+Prioritize cinematic lighting, realistic weather simulation, fluid performance, and an emotionally quiet atmosphere. The final result should resemble a high-quality animated movie scene rather than a website or game.
