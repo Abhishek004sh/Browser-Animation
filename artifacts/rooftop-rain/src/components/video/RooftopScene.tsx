@@ -1,5 +1,5 @@
 import React, { useMemo, useRef, useEffect, Component, type ReactNode } from 'react';
-import { Canvas, useFrame, extend, useThree } from '@react-three/fiber';
+import { Canvas, useFrame, extend, useThree, type ThreeElement } from '@react-three/fiber';
 import gsap from 'gsap';
 import * as THREE from 'three';
 import { motion } from 'framer-motion';
@@ -30,7 +30,7 @@ extend({ SteamMaterial });
 
 declare module '@react-three/fiber' {
   interface ThreeElements {
-    steamMaterial: React.ComponentProps<typeof SteamMaterial> & { attach?: string };
+    steamMaterial: ThreeElement<typeof SteamMaterial>;
   }
 }
 
