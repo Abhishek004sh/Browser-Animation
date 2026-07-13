@@ -36,18 +36,26 @@ declare module '@react-three/fiber' {
 }
 
 // ─── Module-level shared weather state (written by DynamicWeather, read by all) ─
-const W = { phase: 0.55, lightning: 0.0, _nextStrike: 14.0 };
+// lightningPeak/lightningBounce/lightningDir* are additive fields for richer
+// per-strike variety; existing consumers only ever read `lightning` and
+// `phase`, so this extension is fully backward compatible.
+const W = {
+  phase: 0.55, lightning: 0.0, _nextStrike: 14.0,
+  lightningPeak: 1.0, lightningBounce: 0.0,
+  lightningDirX: 0, lightningDirY: 140, lightningDirZ: -20,
+};
 
 // ─── Window ShaderMaterial (GPU-animated per-instance) ────────────────────────
 // Three.js (r131+) auto-injects instanceMatrix into custom ShaderMaterial
 // when the parent object is an InstancedMesh.
 function makeWindowMaterial() {
   return new THREE.ShaderMaterial({
-    uniforms: { uTime: { value: 0 } },
+    uniforms: { uTime: { value: 0 }, uLightning: { value: 0 } },
     vertexShader: `
       attribute float aPhase;
       attribute vec3  aColor;
       uniform  float  uTime;
+      uniform  float  uLightning;
       varying  vec3   vCol;
       void main() {
         float speed  = 0.08 + aPhase * 0.42;
@@ -55,7 +63,8 @@ function makeWindowMaterial() {
         float onOff  = step(0.28, fract(aPhase * 7.38906));
         // Occasional fast-flicker override (offices turning off/on)
         float flick  = step(0.97, fract(aPhase * 31.4 + uTime * (0.05 + aPhase * 0.15)));
-        vCol = aColor * wave * max(onOff, flick) * 1.75;
+        // Very subtle lightning sympathy — windows catch a touch of the flash
+        vCol = aColor * wave * max(onOff, flick) * 1.75 * (1.0 + uLightning * 0.16);
         gl_Position  = projectionMatrix * modelViewMatrix * instanceMatrix * vec4(position, 1.0);
       }
     `,
@@ -144,7 +153,7 @@ function CameraRig() {
 
 function makeFarRainMaterial() {
   return new THREE.ShaderMaterial({
-    uniforms: { uTime: { value: 0 }, uWindX: { value: 0 }, uWindZ: { value: 0 } },
+    uniforms: { uTime: { value: 0 }, uWindX: { value: 0 }, uWindZ: { value: 0 }, uLightning: { value: 0 } },
     vertexShader: `
       attribute float aX; attribute float aY0; attribute float aZ;
       attribute float aSpeed; attribute float aSize;
@@ -163,10 +172,13 @@ function makeFarRainMaterial() {
     `,
     fragmentShader: `
       varying float vAlpha;
+      uniform float uLightning;
       void main() {
         vec2  uv    = gl_PointCoord * 2.0 - 1.0;
         float d     = length(uv * vec2(3.2, 1.0));
-        float alpha = (1.0 - smoothstep(0.1, 1.0, d)) * vAlpha;
+        // Rain becomes very slightly more visible during a flash, like it's
+        // briefly catching the light — reverts the instant the flash decays.
+        float alpha = (1.0 - smoothstep(0.1, 1.0, d)) * vAlpha * (1.0 + uLightning * 0.35);
         if (alpha < 0.003) discard;
         gl_FragColor = vec4(0.40, 0.51, 0.66, alpha);
       }
@@ -177,7 +189,7 @@ function makeFarRainMaterial() {
 
 function makeNearRainMaterial() {
   return new THREE.ShaderMaterial({
-    uniforms: { uTime: { value: 0 }, uWindX: { value: 0 }, uWindZ: { value: 0 } },
+    uniforms: { uTime: { value: 0 }, uWindX: { value: 0 }, uWindZ: { value: 0 }, uLightning: { value: 0 } },
     vertexShader: `
       attribute float aX; attribute float aY0; attribute float aZ;
       attribute float aSpeed; attribute float aSize;
@@ -196,6 +208,7 @@ function makeNearRainMaterial() {
     `,
     fragmentShader: `
       varying float vAlpha;
+      uniform float uLightning;
       void main() {
         vec2  uv      = gl_PointCoord * 2.0 - 1.0;
         // Streak: narrow in x, bright head (uv.y=-1) fading to tail (uv.y=+1)
@@ -205,7 +218,8 @@ function makeNearRainMaterial() {
         // Specular core at the head — weight reduced so the head no longer
         // reads as a hot white dot on top of each streak.
         float core    = 1.0 - smoothstep(0.0, 1.0, length(uv * vec2(8.5, 2.0)));
-        float alpha   = (streak * 0.55 + core * 0.30) * vAlpha;
+        // Rain briefly reads a touch brighter during a flash, then settles back.
+        float alpha   = (streak * 0.55 + core * 0.30) * vAlpha * (1.0 + uLightning * 0.30);
         if (alpha < 0.004) discard;
         // Cooler, less pure-white blend — natural rain-drop tint instead of
         // bright white streaks.
@@ -259,9 +273,10 @@ function CinematicRain() {
     const wx   = (Math.sin(t * 0.23) * 0.85 + Math.sin(t * 0.11 + 1.3) * 0.55) * gust;
     const wz   = (Math.cos(t * 0.17 + 0.7) * 0.32 + Math.sin(t * 0.29) * 0.22) * gust;
     for (const m of [farMat, nearMat]) {
-      m.uniforms.uTime.value  += dt;
-      m.uniforms.uWindX.value  = wx;
-      m.uniforms.uWindZ.value  = wz;
+      m.uniforms.uTime.value      += dt;
+      m.uniforms.uWindX.value      = wx;
+      m.uniforms.uWindZ.value      = wz;
+      m.uniforms.uLightning.value  = W.lightning;
     }
   });
 
@@ -513,7 +528,10 @@ function Skyline() {
     windowRef.current.geometry.setAttribute('aColor', new THREE.InstancedBufferAttribute(col, 3));
   }, [wMatrices, wColors]);
 
-  useFrame((_, dt) => { windowMat.uniforms.uTime.value += dt; });
+  useFrame((_, dt) => {
+    windowMat.uniforms.uTime.value      += dt;
+    windowMat.uniforms.uLightning.value  = W.lightning;
+  });
 
   return (
     <group>
@@ -899,16 +917,30 @@ function Rooftop() {
   const scan1Ref = useRef<THREE.Mesh>(null);
   const scan2Ref = useRef<THREE.Mesh>(null);
 
+  // Lightning wet-reflection refs — floor + puddle materials get a brief
+  // emissive nudge during a flash (puddles more than dry concrete).
+  const floorMatRef   = useRef<THREE.MeshStandardMaterial>(null);
+  const puddleMatRefs = useRef<(THREE.MeshPhysicalMaterial | null)[]>([]);
+
   useFrame((state) => {
     const t = state.clock.elapsedTime;
+
+    // Wet-surface lightning reflections — puddles flash noticeably brighter
+    // than the dry concrete floor for the same strike.
+    const wetFlash = W.lightning * 1.6;
+    for (const m of puddleMatRefs.current) { if (m) m.emissiveIntensity = wetFlash; }
+    if (floorMatRef.current) floorMatRef.current.emissiveIntensity = W.lightning * 0.35;
 
     // Billboard 1: warm amber → orange → red cycle
     // Dimmed ~28% vs. prior pass so the toneMapped=false face no longer
     // slams the bloom threshold and washes out into a flat white-orange glow.
+    // A very subtle lightning sympathy (×1 + up to 0.12) is layered on last
+    // so the emissive face reacts naturally without overpowering its own cycle.
     if (bb1MatRef.current) {
-      const p  = t * 0.35;
-      const r  = (0.78 + 0.22 * Math.sin(p)) * 0.72;
-      const g  = (0.22 + 0.20 * Math.sin(p + 1.2)) * 0.72;
+      const p     = t * 0.35;
+      const flash = 1.0 + W.lightning * 0.12;
+      const r     = (0.78 + 0.22 * Math.sin(p)) * 0.72 * flash;
+      const g     = (0.22 + 0.20 * Math.sin(p + 1.2)) * 0.72 * flash;
       bb1MatRef.current.color.setRGB(r, g, 0.02);
     }
     if (bb1LightRef.current && bb1MatRef.current) {
@@ -918,9 +950,10 @@ function Rooftop() {
 
     // Billboard 2: cyan → blue → teal cycle
     if (bb2MatRef.current) {
-      const p  = t * 0.27 + 1.8;
-      const b  = (0.65 + 0.35 * Math.sin(p)) * 0.72;
-      const g  = (0.38 + 0.30 * Math.sin(p + 0.9)) * 0.72;
+      const p     = t * 0.27 + 1.8;
+      const flash = 1.0 + W.lightning * 0.12;
+      const b     = (0.65 + 0.35 * Math.sin(p)) * 0.72 * flash;
+      const g     = (0.38 + 0.30 * Math.sin(p + 0.9)) * 0.72 * flash;
       bb2MatRef.current.color.setRGB(0.02, g, b);
     }
     if (bb2LightRef.current && bb2MatRef.current) {
@@ -949,10 +982,13 @@ function Rooftop() {
 
   return (
     <group>
-      {/* Concrete floor — wet roughness so lights produce specular highlights */}
+      {/* Concrete floor — wet roughness so lights produce specular highlights.
+          emissive starts at 0 and is nudged up only briefly during a lightning
+          flash (see useFrame above), reacting far less than the puddles do
+          so wet surfaces clearly read brighter than dry concrete. */}
       <mesh rotation={[-Math.PI/2,0,0]} position={[0,0,-20]} receiveShadow>
         <planeGeometry args={[120,120]} />
-        <meshStandardMaterial color="#18191d" roughness={0.52} metalness={0.06} />
+        <meshStandardMaterial ref={floorMatRef} color="#18191d" roughness={0.52} metalness={0.06} emissive="#8fa4c8" emissiveIntensity={0} />
       </mesh>
 
       {/* Ledges — cast soft shadows onto the deck */}
@@ -961,11 +997,13 @@ function Rooftop() {
       <mesh castShadow position={[59,0.9,-20]}><boxGeometry args={[1.2,1.8,120]} /><meshStandardMaterial color="#212328" roughness={0.95} /></mesh>
       <mesh castShadow position={[0,0.9,-79]}><boxGeometry args={[120,1.8,1.2]} /><meshStandardMaterial color="#212328" roughness={0.95} /></mesh>
 
-      {/* Puddles */}
+      {/* Puddles — emissive nudged up sharply during a lightning flash (see
+          useFrame above) so wet reflections pop noticeably more than the
+          dry concrete floor does for the same strike. */}
       {([[3,6,0.4],[-7,-12,0.55],[12,-8,0.3],[-14,15,0.5],[20,3,0.45],[-3,-28,0.5],[8,-30,0.35]] as [number,number,number][]).map(([px,pz,sc],i)=>(
         <mesh key={i} position={[px,0.02,pz]} rotation={[-Math.PI/2,0,0]}>
           <circleGeometry args={[3*sc+1.5,24]} />
-          <meshPhysicalMaterial roughness={0.01} metalness={0.05} transmission={0.88} ior={1.33} transparent opacity={0.92} color="#1a1f2a" />
+          <meshPhysicalMaterial ref={(el) => { puddleMatRefs.current[i] = el; }} roughness={0.01} metalness={0.05} transmission={0.88} ior={1.33} transparent opacity={0.92} color="#1a1f2a" emissive="#dce8ff" emissiveIntensity={0} />
         </mesh>
       ))}
 
@@ -1374,11 +1412,30 @@ function RooftopMist() {
 }
 
 // ─── Dynamic weather controller — timing, lightning lights, all sub-effects ───
+// Extended in place (still one countdown → one active flag → one W.lightning
+// output, same as before) to generate a randomized *sequence* of sub-pulses
+// per strike instead of one hardcoded envelope, so no two strikes feel alike.
 function DynamicWeather() {
-  const ambRef  = useRef<THREE.AmbientLight>(null);
-  const ptRef   = useRef<THREE.PointLight>(null);
-  const strikeT = useRef(0.0);
-  const active  = useRef(false);
+  const ambRef    = useRef<THREE.AmbientLight>(null);
+  const ptRef     = useRef<THREE.PointLight>(null);
+  const dirRef    = useRef<THREE.DirectionalLight>(null);
+  const bounceRef = useRef<THREE.PointLight>(null);
+  const strikeT   = useRef(0.0);
+  const active    = useRef(false);
+  const bounce    = useRef(0.0);
+  // Per-strike pulse plan: a list of {t0,t1,peak,phase} segments built once
+  // when a strike starts, then simply sampled every frame while active.
+  const pulses    = useRef<{ t0: number; t1: number; peak: number; phase: 'rise' | 'hold' | 'fall' }[]>([]);
+  const totalDur  = useRef(0.24);
+
+  useEffect(() => {
+    // Aim the directional flash at the rooftop deck regardless of where in
+    // the sky the strike originates each time.
+    if (dirRef.current) {
+      dirRef.current.target.position.set(0, 2, -30);
+      dirRef.current.target.updateMatrixWorld();
+    }
+  }, []);
 
   useFrame((state, dt) => {
     const t = state.clock.elapsedTime;
@@ -1394,26 +1451,80 @@ function DynamicWeather() {
       strikeT.current = 0.0;
       // Rare at calm (up to ~36 s), frequent at peak storm (as short as 4 s)
       W._nextStrike = 4.0 + (1.0 - W.phase) * 28.0 + Math.random() * 8.0;
+
+      // Build this strike's randomized pulse sequence: mostly single flashes,
+      // occasionally a double, rarely a triple — each with its own randomized
+      // intensity and rise/hold/fall timing so duration varies strike to strike.
+      const roll        = Math.random();
+      const flashCount  = roll < 0.65 ? 1 : roll < 0.87 ? 2 : 3;
+      const strikePeak  = 0.70 + Math.random() * 0.55; // overall strike intensity, 0.70–1.25
+      const seq: typeof pulses.current = [];
+      let cursor = 0;
+      for (let i = 0; i < flashCount; i++) {
+        const riseDur   = 0.03 + Math.random() * 0.05;
+        const holdDur   = 0.02 + Math.random() * 0.05;
+        const fallDur   = 0.06 + Math.random() * 0.10;
+        // Secondary/tertiary flashes in a multi-strike are usually a bit dimmer
+        const flashPeak = strikePeak * (i === 0 ? 1.0 : 0.5 + Math.random() * 0.45);
+        seq.push({ t0: cursor,               t1: cursor + riseDur,             peak: flashPeak, phase: 'rise' });
+        cursor += riseDur;
+        seq.push({ t0: cursor,               t1: cursor + holdDur,             peak: flashPeak, phase: 'hold' });
+        cursor += holdDur;
+        seq.push({ t0: cursor,               t1: cursor + fallDur,             peak: flashPeak, phase: 'fall' });
+        cursor += fallDur;
+        if (i < flashCount - 1) cursor += 0.05 + Math.random() * 0.09; // gap before next sub-flash
+      }
+      pulses.current   = seq;
+      totalDur.current = cursor;
+      W.lightningPeak  = strikePeak;
+
+      // Randomize the flash's apparent origin high in the sky — a real strike
+      // doesn't always come from directly overhead, so the subtle directional
+      // light's angle (and therefore shadow/highlight side) varies each time.
+      const az   = Math.random() * Math.PI * 2;
+      const elev = 0.35 + Math.random() * 0.55;
+      const dist = 90 + Math.random() * 70;
+      W.lightningDirX = Math.cos(az) * dist;
+      W.lightningDirY = 110 + elev * 160;
+      W.lightningDirZ = -30 + Math.sin(az) * dist;
     }
 
-    // Flash envelope: instant spike → partial decay → secondary flash → tail off
+    // Sample the current strike's pulse sequence (rise → hold → fall, possibly
+    // repeated 2–3×) instead of one fixed hand-authored envelope.
     if (active.current) {
       strikeT.current += dt;
       const s = strikeT.current;
       let fl = 0.0;
-      if      (s < 0.055) fl = s / 0.055;
-      else if (s < 0.090) fl = 1.0 - (s - 0.055) / 0.035 * 0.55;
-      else if (s < 0.130) fl = 0.45 + (s - 0.090) / 0.040 * 0.40;
-      else if (s < 0.240) fl = 0.85 - (s - 0.130) / 0.110;
-      else { fl = 0.0; active.current = false; }
+      for (const seg of pulses.current) {
+        if (s >= seg.t0 && s <= seg.t1) {
+          const localT = (s - seg.t0) / Math.max(0.0001, seg.t1 - seg.t0);
+          if      (seg.phase === 'rise') fl = seg.peak * localT;
+          else if (seg.phase === 'hold') fl = seg.peak;
+          else                           fl = seg.peak * (1.0 - localT);
+          break;
+        }
+      }
+      if (s > totalDur.current) { fl = 0.0; active.current = false; }
       W.lightning = fl;
     } else {
       W.lightning = 0.0;
     }
 
+    // Soft ambient bounce — rises instantly with the flash but fades much more
+    // slowly, giving a brief lingering glow across the rooftop after the strike.
+    bounce.current    = Math.max(W.lightning * 0.6, bounce.current - dt * 1.1);
+    W.lightningBounce = bounce.current;
+
     // Illuminate entire scene during strike
     if (ambRef.current) ambRef.current.intensity  = W.lightning * 4.5;
     if (ptRef.current)  ptRef.current.intensity   = W.lightning * 340.0;
+    // Subtle directional component from the randomized sky origin
+    if (dirRef.current) {
+      dirRef.current.position.set(W.lightningDirX, W.lightningDirY, W.lightningDirZ);
+      dirRef.current.intensity = W.lightning * 1.6;
+    }
+    // Trailing bounce light — cheap, no shadow, fades independently of the flash
+    if (bounceRef.current) bounceRef.current.intensity = bounce.current * 5.0;
   });
 
   return (
@@ -1421,6 +1532,11 @@ function DynamicWeather() {
       <ambientLight ref={ambRef} color="#c8dcff" intensity={0} />
       <pointLight   ref={ptRef}  color="#d0e4ff" intensity={0}
                     position={[0, 240, -80]} distance={1000} decay={1.1} />
+      {/* Subtle directional flash — origin varies per strike; no shadow, cheap */}
+      <directionalLight ref={dirRef} color="#dfe9ff" intensity={0} />
+      {/* Soft ambient bounce that trails behind the sharp flash and fades slowly */}
+      <pointLight ref={bounceRef} color="#b8c8e8" intensity={0}
+                  position={[0, 14, -25]} distance={140} decay={1.6} />
       <StormClouds />
       <BuildingFog />
       <RooftopMist />
