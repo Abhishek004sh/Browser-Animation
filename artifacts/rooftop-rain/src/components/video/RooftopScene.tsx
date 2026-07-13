@@ -17,13 +17,15 @@ const SteamMaterial = shaderMaterial(
    void main() {
      vec3 p = position;
      float t = fract(aPhase + uTime * 0.09);
-     float spread = t * t * 4.8;
+     // Rise capped at 6 units so rooftop HVAC steam (emitters y≈1–4) peaks
+     // below the billboard faces (y≈10–12) and never floats through them.
+     float spread = t * t * 3.2;
      p.x += sin(uTime * 0.45 + aPhase * 7.3) * spread;
-     p.y += t * 20.0;
+     p.y += t * 6.0;
      p.z += cos(uTime * 0.38 + aPhase * 5.8) * spread;
      gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
      vAlpha = max(0.0, 1.0 - t * t);
-     gl_PointSize = max(1.5, vAlpha * 18.0);
+     gl_PointSize = max(1.5, vAlpha * 16.0);
    }`,
   `varying float vAlpha;
    void main() {
