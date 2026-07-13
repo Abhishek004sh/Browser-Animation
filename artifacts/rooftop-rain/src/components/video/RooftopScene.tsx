@@ -207,18 +207,18 @@ function makeFloorWindowMaterial() {
           vCol = vec3(0.20, 0.12, 0.06) * 0.14 * secOn;
 
         } else if (ft < 1.5) {
-          // Office — cool white, 80% on, very gentle flicker
+          // Office — neutral-warm white, 80% on, very gentle flicker
           float wave  = 0.90 + 0.10 * sin(uTime * speed + aPhase * 6.28);
           float onOff = step(0.20, fract(aPhase * 7.389));
           float flick = step(0.988, fract(aPhase * 31.4 + uTime * (0.04 + aPhase * 0.06)));
           float lit   = wave * max(onOff, flick) * (1.0 + uLightning * 0.13);
-          vCol = aColor * lit * 1.80;
+          vCol = aColor * lit * 1.10;
 
         } else if (ft < 2.5) {
           // Residential — warm amber, ~50% on, slow organic variation
           float wave  = 0.65 + 0.35 * sin(uTime * speed * 0.45 + aPhase * 6.28);
           float onOff = step(0.50, fract(aPhase * 7.389));
-          vCol = aColor * wave * onOff * 1.50 * (1.0 + uLightning * 0.09);
+          vCol = aColor * wave * onOff * 1.00 * (1.0 + uLightning * 0.09);
 
         } else if (ft < 3.5) {
           // Emergency — dim steady red, always on
@@ -735,8 +735,10 @@ function Skyline() {
     const c     = new THREE.Color();
 
     // Window color palettes per floor type
-    const officeColors = ['#d0e4ff', '#c8dcff', '#dce8ff', '#e8f4ff'];
-    const residColors  = ['#ffe4b0', '#ffd580', '#ffca80', '#ffd090'];
+    // Office: neutral-warm white mix (3500–5000 K fluorescent / LED)
+    const officeColors = ['#ffe8c0', '#fff0d8', '#f0f0e8', '#e8ecf0'];
+    // Residential: warm amber (2700–3200 K incandescent / warm LED)
+    const residColors  = ['#ffaa50', '#ffb860', '#ffc070', '#ffaa40'];
 
     // Archetype cumulative probability:
     //   0 glass(20%) | 1 brick(30%) | 2 concrete(20%) | 3 steel(15%) | 4 painted(15%)
@@ -767,12 +769,17 @@ function Skyline() {
       bHeights.push(bh);
       tops.push([bx, bh, bz]);
 
-      // Window grid on front face
-      const frontZ = bz + bd / 2 + 0.2;
-      const cols   = Math.max(2, Math.floor(bw / 5));
-      const rows   = Math.max(2, Math.floor(bh / 6));
-      const stepX  = bw / (cols + 1);
-      const stepY  = bh / (rows + 1);
+      // Window grid on front face — aligned to facade floor bands and bay divisions.
+      // FLOOR_H matches the facade shader's bH/4.5 floor count so windows sit at
+      // the visual midpoint of each horizontal band. BAY_W matches the facade
+      // shader's per-archetype bay spacing so columns align with vertical divisions.
+      const frontZ  = bz + bd / 2 + 0.2;
+      const FLOOR_H = 4.5;
+      const BAY_W   = bType === 2 ? 5.5 : bType === 1 ? 3.5 : 4.2;
+      const rows    = Math.max(2, Math.floor(bh / FLOOR_H));
+      const cols    = Math.max(2, Math.floor(bw / BAY_W));
+      const stepY   = FLOOR_H;
+      const stepX   = bw / cols;
 
       // Per-building floor-occupancy seed (deterministic, stable)
       const floorSeed = bPhase * 997.3;
@@ -783,11 +790,11 @@ function Skyline() {
         const fv  = fh - Math.floor(fh);
 
         let floorType: number;
-        if      (fv < 0.18) floorType = 0; // dark         18%
-        else if (fv < 0.55) floorType = 1; // office       37%
-        else if (fv < 0.82) floorType = 2; // residential  27%
-        else if (fv < 0.92) floorType = 4; // blinds       10%
-        else                floorType = 3; // emergency     8%
+        if      (fv < 0.45) floorType = 0; // dark         45%
+        else if (fv < 0.73) floorType = 1; // office       28%
+        else if (fv < 0.91) floorType = 2; // residential  18%
+        else if (fv < 0.99) floorType = 4; // blinds        8%
+        else                floorType = 3; // emergency     1%
 
         // Architectural overrides
         if (bType === 0 && r >= rows - 2)          floorType = 1; // glass top floors always lit
@@ -800,13 +807,13 @@ function Skyline() {
           if (Math.random() > 0.62) continue;
 
           dummy.position.set(
-            bx - bw / 2 + stepX * (col + 1),
-            stepY * (r + 1),
+            bx - bw / 2 + stepX * (col + 0.5), // center of bay column
+            (r + 0.5) * stepY,                  // center of floor band
             frontZ,
           );
           dummy.scale.set(
-            Math.min(stepX * 0.55, 3.0),
-            Math.min(stepY * 0.58, 3.5),
+            Math.min(stepX * 0.52, 2.8),         // window width within bay
+            Math.min(stepY * 0.52, 2.6),         // window height within floor band
             1,
           );
           dummy.rotation.set(0, 0, 0);
@@ -905,65 +912,6 @@ function Skyline() {
       )}
       <SkylineRooftopDetails tops={buildData.tops} />
     </group>
-  );
-}
-
-// ─── Building rooftop blinkers ────────────────────────────────────────────────
-function BuildingBlinkers() {
-  const COUNT = 48;
-  const { positions, phases } = useMemo(() => {
-    const pos: [number,number,number][] = [];
-    const ph = new Float32Array(COUNT);
-    for (let i = 0; i < COUNT; i++) {
-      const ring  = Math.floor(i / 10);
-      const angle = (i % 10) * (Math.PI * 2 / 10) + ring * 0.7;
-      const rad   = 60 + ring * 35;
-      const x     = Math.cos(angle) * rad + (Math.random()-0.5) * 30;
-      const z     = -90 + Math.sin(angle) * rad * 0.5 + (Math.random()-0.5) * 20;
-      const y     = 55 + Math.random() * 200;
-      pos.push([x, y, z]);
-      ph[i] = Math.random();
-    }
-    return { positions: pos, phases: ph };
-  }, []);
-
-  const meshRef = useRef<THREE.InstancedMesh>(null);
-
-  useEffect(() => {
-    if (!meshRef.current) return;
-    const dummy = new THREE.Object3D();
-    positions.forEach(([x, y, z], i) => {
-      dummy.position.set(x, y, z);
-      dummy.scale.setScalar(0.8);
-      dummy.updateMatrix();
-      meshRef.current!.setMatrixAt(i, dummy.matrix);
-    });
-    meshRef.current.instanceMatrix.needsUpdate = true;
-    const red = new THREE.Color('#ff1100');
-    for (let i = 0; i < COUNT; i++) meshRef.current.setColorAt(i, red);
-    if (meshRef.current.instanceColor) meshRef.current.instanceColor.needsUpdate = true;
-  }, [positions]);
-
-  const _c = useMemo(() => new THREE.Color(), []);
-  useFrame((state) => {
-    if (!meshRef.current?.instanceColor) return;
-    const t = state.clock.elapsedTime;
-    let dirty = false;
-    for (let i = 0; i < COUNT; i++) {
-      const freq = 1.2 + phases[i] * 2.2;
-      const on   = Math.sin(t * freq + phases[i] * 6.28) > 0.65;
-      _c.setRGB(on ? 1 : 0.04, 0, 0);
-      meshRef.current.setColorAt(i, _c);
-      dirty = true;
-    }
-    if (dirty) meshRef.current.instanceColor!.needsUpdate = true;
-  });
-
-  return (
-    <instancedMesh ref={meshRef} args={[undefined, undefined, COUNT]}>
-      <sphereGeometry args={[1, 5, 4]} />
-      <meshBasicMaterial toneMapped={false} />
-    </instancedMesh>
   );
 }
 
@@ -2484,7 +2432,6 @@ export function RooftopScene() {
           <RooftopDetails />
           <Skyline />
           <DistantBillboards />
-          <BuildingBlinkers />
           <Streets />
           <Cars />
           <Aircraft />
