@@ -55,12 +55,12 @@ const W = {
   lightningDirX: 0, lightningDirY: 140, lightningDirZ: -20,
 };
 
-// ─── Building facade material — 5 archetypes, procedural detail ───────────────
+// ─── Building facade material — 5 archetypes, physically believable materials ──
 // Attributes: aType (0-4 archetype), aPhase (per-building seed),
 //             aBW (world width), aBH (world height)
 function makeBuildingFacadeMaterial() {
   return new THREE.ShaderMaterial({
-    uniforms: { uLightning: { value: 0 } },
+    uniforms: { uLightning: { value: 0 }, uTime: { value: 0 } },
     vertexShader: `
       attribute float aType;
       attribute float aPhase;
@@ -73,8 +73,8 @@ function makeBuildingFacadeMaterial() {
       varying  float  vBW;
       varying  float  vBH;
       void main() {
-        vUv   = uv;
-        vNorm = normal;
+        vUv    = uv;
+        vNorm  = normal;
         vType  = aType;
         vPhase = aPhase;
         vBW    = aBW;
@@ -84,6 +84,7 @@ function makeBuildingFacadeMaterial() {
     `,
     fragmentShader: `
       uniform float uLightning;
+      uniform float uTime;
       varying vec2  vUv;
       varying vec3  vNorm;
       varying float vType;
@@ -91,92 +92,248 @@ function makeBuildingFacadeMaterial() {
       varying float vBW;
       varying float vBH;
 
-      float hash(float n) { return fract(sin(n) * 43758.5453); }
+      // ─── Procedural noise helpers ──────────────────────────────────────────
+      float h1(float n) { return fract(sin(n) * 43758.5453); }
+      float h2(float a, float b) { return fract(sin(a * 127.1 + b * 311.7) * 43758.5453); }
+
+      // Smooth value noise, 1-D
+      float sn1(float x) {
+        float i = floor(x); float f = fract(x);
+        float u = f * f * (3.0 - 2.0 * f);
+        return mix(h1(i), h1(i + 1.0), u);
+      }
+      // Smooth value noise, 2-D
+      float sn2(float x, float y) {
+        float ix = floor(x); float iy = floor(y);
+        float fx = fract(x); float fy = fract(y);
+        float ux = fx*fx*(3.0-2.0*fx); float uy = fy*fy*(3.0-2.0*fy);
+        return mix(
+          mix(h2(ix,iy),     h2(ix+1.0,iy),     ux),
+          mix(h2(ix,iy+1.0), h2(ix+1.0,iy+1.0), ux), uy);
+      }
+      // Two-octave noise for larger organic variation
+      float fbm2(float x, float y) {
+        return sn2(x, y) * 0.62 + sn2(x * 2.1 + 3.7, y * 2.1 + 1.3) * 0.38;
+      }
 
       void main() {
         int  type    = int(vType + 0.5);
         bool isTop   = vNorm.y > 0.5;
         bool isFront = abs(vNorm.z) > 0.5;
+        bool isSide  = abs(vNorm.x) > 0.5;
 
-        // ── Archetype base color ────────────────────────────────────────
-        // 0: glass curtain wall    — deep cool blue-gray
-        // 1: brick residential     — warm dark terracotta-brown
-        // 2: concrete / service    — muted gray-green
-        // 3: modern steel          — dark near-neutral
-        // 4: painted concrete      — slightly warmer gray
+        // ── Archetype base colors — low-saturation, physically dark ─────────
+        // 0: glass curtain wall  — near-black deep blue-gray
+        // 1: brick residential   — dark desaturated terracotta
+        // 2: concrete / service  — dark charcoal gray, faint green cast
+        // 3: modern steel        — dark anthracite, slight cool blue
+        // 4: painted concrete    — dark warm gray, faint ochre warmth
         vec3 baseCol;
-        if      (type == 0) baseCol = vec3(0.052, 0.072, 0.118);
-        else if (type == 1) baseCol = vec3(0.082, 0.056, 0.044);
-        else if (type == 2) baseCol = vec3(0.058, 0.065, 0.060);
-        else if (type == 3) baseCol = vec3(0.062, 0.070, 0.083);
-        else                baseCol = vec3(0.075, 0.070, 0.064);
+        if      (type == 0) baseCol = vec3(0.034, 0.046, 0.074);
+        else if (type == 1) baseCol = vec3(0.094, 0.060, 0.044);
+        else if (type == 2) baseCol = vec3(0.058, 0.062, 0.056);
+        else if (type == 3) baseCol = vec3(0.046, 0.054, 0.068);
+        else                baseCol = vec3(0.068, 0.063, 0.054);
 
-        // Per-building phase variation (±10%) so no two buildings are identical
-        float pv  = 1.0 + (hash(vPhase * 17.3 + 1.7) - 0.5) * 0.20;
+        // Per-building variation: ±13% so neighbours never look identical
+        float pv  = 0.935 + h1(vPhase * 17.3 + 1.7) * 0.17;
         vec3  col = baseCol * pv;
 
+        // ── Large-scale surface noise — coarse patch variation ───────────────
+        // Simulates material inconsistency across the facade surface.
+        float colSpan = isFront ? vBW : vBW * 0.68;
+        float macroVar = sn2(vUv.x * colSpan * 0.12 + vPhase * 2.3,
+                              vUv.y * vBH   * 0.08 + vPhase * 0.7);
+        col *= 0.91 + macroVar * 0.14;
+
         if (!isTop) {
-          // ── Horizontal floor separation bands ──────────────────────
-          // One thin dark line per ~4.5-unit floor; creates a strong
-          // architectural rhythm across the entire building height.
+          // ── Floor separation bands ───────────────────────────────────────
+          // Shadow groove at every 4.5-unit floor.
           float floorCount = max(4.0, vBH / 4.5);
           float fy = fract(vUv.y * floorCount);
-          float floorLine  = 1.0 - smoothstep(0.0, 0.055, fy)
-                                 * smoothstep(0.0, 0.055, 1.0 - fy);
-          col *= 1.0 - floorLine * (type == 1 ? 0.22 : 0.13);
+          float groove = smoothstep(0.0, 0.042, fy) * smoothstep(0.0, 0.042, 1.0 - fy);
+          col *= 0.78 + groove * 0.22;
 
-          // ── Vertical bay division lines ─────────────────────────────
-          // Bay width varies by archetype to reflect real construction logic:
-          // glass = 4.2 u (curtain modules), brick = 3.5 u, concrete = 5.5 u
-          float bayW     = type == 2 ? 5.5 : (type == 1 ? 3.5 : 4.2);
-          float colSpan  = isFront ? vBW : vBW * 0.68; // side faces narrower
+          // ── Vertical bay lines ────────────────────────────────────────────
+          // Bay width per archetype matches window-grid spacing.
+          float bayW     = (type == 2) ? 5.5 : (type == 1 ? 3.5 : 4.2);
           float bayCount = max(2.0, colSpan / bayW);
-          float bx = fract(vUv.x * bayCount);
-          float bayLine  = 1.0 - smoothstep(0.0, 0.045, bx)
-                               * smoothstep(0.0, 0.045, 1.0 - bx);
-          col *= 1.0 - bayLine * 0.09;
+          float bxu      = fract(vUv.x * bayCount);
+          float bayGroove = smoothstep(0.0, 0.036, bxu) * smoothstep(0.0, 0.036, 1.0 - bxu);
+          col *= 0.90 + bayGroove * 0.10;
 
-          // ── Corner darkening — shadow accumulates at building corners ─
-          float crnX = 1.0 - smoothstep(0.0, 0.09, vUv.x)
-                           * smoothstep(0.0, 0.09, 1.0 - vUv.x);
-          col *= 1.0 - crnX * 0.34;
+          // ── ARCHETYPE SURFACE DETAIL ──────────────────────────────────────
 
-          // ── Thin specular edge highlight (moonlight on building edges) ──
-          float eX = smoothstep(0.96, 1.00, vUv.x) + smoothstep(0.96, 1.00, 1.0 - vUv.x);
-          float eY = smoothstep(0.98, 1.00, vUv.y) + smoothstep(0.98, 1.00, 1.0 - vUv.y);
-          float edge = clamp(eX + eY, 0.0, 1.0);
-          // Glass and steel read brighter on their edges
-          float edgeBright = (type == 0 || type == 3) ? 0.15 : 0.06;
-          col += vec3(edge * edgeBright);
-
-          // ── Glass curtain wall: subtle vertical reflection banding ───
+          // ─── Glass curtain wall (type 0) ─────────────────────────────────
           if (type == 0) {
-            float rb = 0.5 + 0.5 * sin(vUv.x * 13.7 + vPhase * 6.28);
-            col += rb * rb * vec3(0.010, 0.013, 0.019);
+            // Spandrel vs vision glass — every other floor is a darker back-
+            // painted spandrel band (opaque), the rest is vision glass.
+            float rowIdx    = floor(vUv.y * floorCount);
+            float spandrel  = step(0.5, fract(rowIdx * 0.5 + h1(vPhase * 3.7) * 0.5));
+            col *= 1.0 - spandrel * 0.20;
+
+            // Per-panel reflection — each pane catches ambient light slightly
+            // differently depending on its cast angle and surface flatness.
+            float panelR = sn1(vUv.y * floorCount + vPhase * 8.2);
+            float colR   = sn1(vUv.x * bayCount   + vPhase * 3.7);
+            float refl   = panelR * colR;
+
+            // Warm city-light catch: lower floors reflect more street amber.
+            float cityC = refl * (1.0 - vUv.y * 0.75) * 0.60;
+            col += vec3(cityC * 0.018, cityC * 0.010, cityC * 0.002);
+            // Cool sky tint: upper floors reflect overcast night sky.
+            float skyC = refl * vUv.y * 0.45;
+            col += vec3(skyC * 0.003, skyC * 0.005, skyC * 0.014);
+
+            // Thin mullion edge highlight — bright line at each bay boundary.
+            float mullW = 0.030;
+            float mull  = clamp(step(1.0 - mullW, bxu) + step(1.0 - mullW, 1.0 - bxu), 0.0, 1.0);
+            col += vec3(mull * 0.022 * (0.65 + 0.35 * refl));
           }
 
-          // ── Brick: subtle horizontal mortar row texture ──────────────
+          // ─── Brick (type 1) ───────────────────────────────────────────────
           if (type == 1) {
-            float rowV = fract(vUv.y * (vBH / 0.45));
-            col *= 1.0 - smoothstep(0.90, 1.0, rowV) * 0.08;
+            // Running-bond: ~8 courses per floor, ~5.5 bricks per bay column.
+            float bRows   = floorCount * 8.0;
+            float bCols   = bayCount   * 5.5;
+            float br      = fract(vUv.y * bRows);
+            float rowIdx  = floor(vUv.y * bRows);
+            // Half-brick offset on alternate rows.
+            float bOff    = step(0.5, fract(rowIdx * 0.5)) * 0.5;
+            float bc      = fract(vUv.x * bCols + bOff);
+            // Mortar joints: horizontal slightly wider than vertical.
+            float mH = smoothstep(0.88, 0.97, br);
+            float mV = smoothstep(0.90, 0.98, bc);
+            // Mortar is lighter/cooler than the brick face.
+            col = mix(col, col * vec3(1.40, 1.32, 1.22), max(mH, mV) * 0.55);
+            // Per-course color variation (some courses more burnt/weathered).
+            float cVar = h1(rowIdx * 0.371 + vPhase * 13.7);
+            col *= 0.85 + cVar * 0.24;
+            // Efflorescence / mineral staining — brownish damp patches.
+            float stain = fbm2(vUv.x * colSpan * 0.20 + vPhase * 2.7,
+                               vUv.y * vBH    * 0.14 + vPhase);
+            stain = smoothstep(0.54, 0.76, stain) * 0.32;
+            col = mix(col, col * vec3(0.55, 0.46, 0.36), stain);
           }
 
-          // ── Recessed window band — slight shadow inside reveal ───────
-          float floorMid = 0.5 + 0.5 * sin(fy * 3.14159);
-          float winDepth = smoothstep(0.12, 0.62, floorMid)
-                         * smoothstep(0.12, 0.62, 1.0 - floorMid);
-          col *= 1.0 - winDepth * 0.06;
+          // ─── Concrete / service (type 2) ─────────────────────────────────
+          if (type == 2) {
+            // Large pour panels with expansion joints every 2 floors × 2 bays.
+            float py = fract(vUv.y * floorCount * 0.5);
+            float px = fract(vUv.x * bayCount   * 0.5);
+            float hJ = 1.0 - smoothstep(0.0, 0.020, py) * smoothstep(0.0, 0.020, 1.0 - py);
+            float vJ = 1.0 - smoothstep(0.0, 0.017, px) * smoothstep(0.0, 0.017, 1.0 - px);
+            col *= 1.0 - hJ * 0.20;
+            col *= 1.0 - vJ * 0.16;
+            // Form-board horizontal striation — very faint banding.
+            float form = sn1(vUv.y * vBH * 0.60 + vPhase * 4.1);
+            col *= 0.90 + form * 0.16;
+            // Coarse aggregate speckle — hash per small cell.
+            float cxc = floor(vUv.x * colSpan * 3.8 + vPhase * 97.3);
+            float cyc = floor(vUv.y * vBH     * 3.0 + vPhase * 53.1);
+            col *= 0.93 + h2(cxc, cyc) * 0.11;
+            // Moisture darkening at recessed joint edges.
+            float jointDamp = (1.0 - hJ * 0.95) * (1.0 - vJ * 0.95);
+            col *= 0.88 + jointDamp * 0.14;
+          }
 
-          // ── Rain-wet base: moisture darkens bottom ~18% of facade ────
-          col *= 1.0 - smoothstep(0.0, 0.18, vUv.y) * 0.26;
+          // ─── Modern steel (type 3) ────────────────────────────────────────
+          if (type == 3) {
+            // Brushed metal panels — alternating brightness across each bay.
+            float panelB = sn1(bxu * 1.9 + vPhase * 4.4);
+            col *= 0.80 + panelB * 0.28;
+            // Subtle reflection of distant street amber at mid-height.
+            float midH = smoothstep(0.15, 0.55, vUv.y) * smoothstep(0.15, 0.55, 1.0 - vUv.y);
+            col += vec3(midH * 0.009, midH * 0.006, midH * 0.002);
+            // Vertical mullion bright lines at bay edges.
+            float mullW2 = 0.025;
+            float mull2  = clamp(step(1.0 - mullW2, bxu) + step(1.0 - mullW2, 1.0 - bxu), 0.0, 1.0);
+            col += vec3(mull2 * 0.016);
+          }
+
+          // ─── Painted concrete (type 4) ─────────────────────────────────────
+          if (type == 4) {
+            // Paint weathering: uneven gloss and chalking.
+            float weather = fbm2(vUv.x * 2.8 + vPhase * 5.1, vUv.y * 3.4 + vPhase);
+            col *= 0.84 + weather * 0.24;
+            // UV fading near top — historically exposed more before high-rises.
+            col *= 1.0 - vUv.y * 0.10;
+            // Sill run-off lines — darker below each window reveal.
+            float sillDrip = 1.0 - smoothstep(0.0, 0.055, fy) * 0.14;
+            col *= sillDrip;
+            // Hairline expansion cracks — slight dark band at panel boundaries.
+            float crackH = step(0.968, fract(vUv.y * floorCount * 0.5));
+            col *= 1.0 - crackH * 0.12;
+          }
+
+          // ── Rain streaks — vertical dark channels on all archetypes ────────
+          // Two overlapping scales: coarse channels (6–10 per width) and fine
+          // capillary streaks (14–20 per width). Both are attenuated near the
+          // base (water evaporates on the way down) and near the very top
+          // (streak hasn't built up enough to be visible).
+          float streakW = colSpan;
+          // Coarse channels
+          float sc1 = sn1(vUv.x * streakW * 0.28 + vPhase * 3.7);
+          float sc2 = sn1(vUv.x * streakW * 0.44 + vPhase * 8.3 + 1.4);
+          float coarseS = sc1 * sc1 * sc2;
+          coarseS = smoothstep(0.46, 0.78, coarseS);
+          // Fine capillary streaks
+          float sfx = vUv.x * streakW * 0.68 + vPhase * 11.2;
+          float fineS = smoothstep(0.72, 1.00,
+                          fract(sfx + 0.3) * (0.68 + 0.32 * h1(floor(sfx))));
+          // Y-envelope: strongest in mid-to-upper region
+          float yMask = smoothstep(0.08, 0.22, vUv.y) * smoothstep(0.78, 0.60, vUv.y);
+          float streaks = (coarseS * 0.60 + fineS * 0.28) * yMask;
+          // Depth varies by archetype: glass/steel streak darkest, brick lightest
+          float sDpth = (type == 0) ? 0.20 : (type == 3 ? 0.17 : (type == 1 ? 0.09 : 0.14));
+          col *= 1.0 - streaks * sDpth;
+
+          // ── Grime and moisture accumulation ─────────────────────────────────
+          // Ground-level splash, exhaust soot, and pooled water darken the
+          // lowest 20% of each facade with a slight brownish-gray tinge.
+          float grimeBase = 1.0 - smoothstep(0.0, 0.20, vUv.y) * 0.30;
+          // Mid-facade grime patches from long-term runoff deposits.
+          float grimePatch = fbm2(vUv.x * 1.9 + vPhase * 2.3, vUv.y * 2.6 + vPhase * 0.9);
+          grimePatch = smoothstep(0.56, 0.80, grimePatch) * 0.12;
+          col *= grimeBase * (1.0 - grimePatch);
+          // Slight warm-gray tinge to grime (soot + mineral, not pure black).
+          float grimeAmount = (1.0 - grimeBase) * 0.5 + grimePatch;
+          col = mix(col, col * vec3(1.05, 0.95, 0.88), grimeAmount * 0.35);
+
+          // ── Corner darkening — AO-like shadow at building edges ─────────────
+          float crnX = 1.0 - smoothstep(0.0, 0.08, vUv.x) * smoothstep(0.0, 0.08, 1.0 - vUv.x);
+          float crnYt = 1.0 - smoothstep(0.92, 1.0, vUv.y); // parapet shadow
+          col *= 1.0 - crnX * 0.30;
+          col *= 1.0 - crnYt * 0.07;
+
+          // ── Edge highlight — moonlight / ambient catch on building edges ─────
+          float eX = smoothstep(0.964, 1.00, vUv.x) + smoothstep(0.964, 1.00, 1.0 - vUv.x);
+          float eY = smoothstep(0.974, 1.00, vUv.y) + smoothstep(0.974, 1.00, 1.0 - vUv.y);
+          float edge = clamp(eX + eY, 0.0, 1.0);
+          // Glass and steel catch light strongly on their thin edges; masonry barely.
+          float eBright = (type == 0) ? 0.14 : (type == 3 ? 0.11 : 0.04);
+          col += edge * eBright * vec3(0.72, 0.82, 1.00);
+
+          // ── Side face: in shadow relative to front ───────────────────────────
+          if (isSide) col *= 0.68;
+
+          // ── Recessed reveal shadow inside window band ────────────────────────
+          float midFy = smoothstep(0.10, 0.48, fy) * smoothstep(0.10, 0.48, 1.0 - fy);
+          col *= 0.94 + midFy * 0.06;
+
+        } else {
+          // ── Rooftop face — dark, rain-wet tar/concrete ──────────────────────
+          col *= 0.58;
+          float pond = sn2(vUv.x * 3.2 + vPhase, vUv.y * 3.2 + vPhase * 1.3);
+          col = mix(col, col * vec3(0.50, 0.60, 0.82), smoothstep(0.60, 0.80, pond) * 0.28);
         }
 
-        // ── Indirect city glow: warm uplight from street level ──────────
-        float cityGlow = 0.020 * (1.0 - vUv.y);
-        col += vec3(cityGlow, cityGlow * 0.50, cityGlow * 0.16);
+        // ── Indirect city glow — warm uplight from street level ────────────────
+        float cityGlow = 0.018 * max(0.0, 1.0 - vUv.y);
+        col += vec3(cityGlow * 0.84, cityGlow * 0.44, cityGlow * 0.14);
 
-        // ── Lightning flash: faint cool wash across all surfaces ─────────
-        col += vec3(uLightning * 0.040, uLightning * 0.048, uLightning * 0.068);
+        // ── Lightning flash — cool white wash across all surfaces ───────────────
+        col += vec3(uLightning * 0.036, uLightning * 0.044, uLightning * 0.062);
 
         gl_FragColor = vec4(col, 1.0);
       }
@@ -894,6 +1051,7 @@ function Skyline() {
 
   useFrame((_, dt) => {
     facadeMat.uniforms.uLightning.value  = W.lightning;
+    facadeMat.uniforms.uTime.value      += dt;
     windowMat.uniforms.uTime.value      += dt;
     windowMat.uniforms.uLightning.value  = W.lightning;
   });
