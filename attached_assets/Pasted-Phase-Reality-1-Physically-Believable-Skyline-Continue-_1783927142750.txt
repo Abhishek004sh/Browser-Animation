@@ -1,0 +1,130 @@
+Phase Reality-1 — Physically Believable Skyline
+
+Continue from the existing project.
+
+Do not change the camera, weather, lightning, characters, rooftop, animation system, post-processing, or rendering architecture.
+
+The goal is to transform the existing procedural city into a believable nighttime New York skyline while preserving performance.
+
+Buildings
+
+Replace the appearance of the current buildings without rebuilding the city layout.
+
+Every building should have its own visual identity.
+
+Avoid pure black buildings.
+
+Introduce realistic facade materials such as:
+
+dark concrete
+glass curtain walls
+brick
+steel
+painted concrete
+
+Every facade should contain subtle procedural variation.
+
+Add:
+
+vertical facade lines
+horizontal floor divisions
+recessed window bands
+darker corners
+subtle edge highlights
+rain-darkened surfaces
+
+Buildings should remain low-poly but appear architecturally believable.
+
+Windows
+
+Completely replace the current random glowing rectangles.
+
+Windows should resemble real occupied buildings.
+
+Generate believable office and apartment patterns.
+
+Include:
+
+entire dark floors
+occupied floors
+random offices
+warm residential lighting
+cooler office lighting
+occasional emergency lighting
+some blinds
+some curtains
+occasional reflection-dominant windows
+
+Windows should never appear randomly scattered.
+
+Floors should feel intentionally designed.
+
+Building Variety
+
+Create multiple facade archetypes.
+
+For example:
+
+glass office towers
+residential apartment blocks
+older brick buildings
+modern skyscrapers
+concrete service buildings
+
+Randomly distribute these archetypes while keeping the existing city layout.
+
+Rooftops
+
+Improve rooftop silhouettes by adding subtle details such as:
+
+water tanks
+HVAC units
+antenna arrays
+elevator rooms
+communication masts
+maintenance lights
+
+Keep them low-poly.
+
+Lighting
+
+Buildings should receive subtle indirect illumination from:
+
+nearby billboards
+city glow
+moonlight
+lightning flashes
+
+Avoid increasing exposure.
+
+Improve realism instead.
+
+Performance
+
+Preserve current FPS.
+
+Reuse geometry.
+
+Use instancing wherever possible.
+
+Avoid increasing draw calls significantly.
+
+Important
+
+Do not add new gameplay systems.
+
+Do not change the weather.
+
+Do not change the camera.
+
+Do not modify the rooftop.
+
+Do not alter the character system.
+
+Only improve the realism of the skyline and building appearance.
+
+Verify:
+
+tsc --noEmit passes.
+Production build succeeds.
+No new runtime warnings or errors.

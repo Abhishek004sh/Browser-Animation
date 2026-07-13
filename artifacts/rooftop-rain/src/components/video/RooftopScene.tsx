@@ -53,27 +53,185 @@ const W = {
   lightningDirX: 0, lightningDirY: 140, lightningDirZ: -20,
 };
 
-// ─── Window ShaderMaterial (GPU-animated per-instance) ────────────────────────
-// Three.js (r131+) auto-injects instanceMatrix into custom ShaderMaterial
-// when the parent object is an InstancedMesh.
-function makeWindowMaterial() {
+// ─── Building facade material — 5 archetypes, procedural detail ───────────────
+// Attributes: aType (0-4 archetype), aPhase (per-building seed),
+//             aBW (world width), aBH (world height)
+function makeBuildingFacadeMaterial() {
+  return new THREE.ShaderMaterial({
+    uniforms: { uLightning: { value: 0 } },
+    vertexShader: `
+      attribute float aType;
+      attribute float aPhase;
+      attribute float aBW;
+      attribute float aBH;
+      varying  vec2   vUv;
+      varying  vec3   vNorm;
+      varying  float  vType;
+      varying  float  vPhase;
+      varying  float  vBW;
+      varying  float  vBH;
+      void main() {
+        vUv   = uv;
+        vNorm = normal;
+        vType  = aType;
+        vPhase = aPhase;
+        vBW    = aBW;
+        vBH    = aBH;
+        gl_Position = projectionMatrix * modelViewMatrix * instanceMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform float uLightning;
+      varying vec2  vUv;
+      varying vec3  vNorm;
+      varying float vType;
+      varying float vPhase;
+      varying float vBW;
+      varying float vBH;
+
+      float hash(float n) { return fract(sin(n) * 43758.5453); }
+
+      void main() {
+        int  type    = int(vType + 0.5);
+        bool isTop   = vNorm.y > 0.5;
+        bool isFront = abs(vNorm.z) > 0.5;
+
+        // ── Archetype base color ────────────────────────────────────────
+        // 0: glass curtain wall    — deep cool blue-gray
+        // 1: brick residential     — warm dark terracotta-brown
+        // 2: concrete / service    — muted gray-green
+        // 3: modern steel          — dark near-neutral
+        // 4: painted concrete      — slightly warmer gray
+        vec3 baseCol;
+        if      (type == 0) baseCol = vec3(0.052, 0.072, 0.118);
+        else if (type == 1) baseCol = vec3(0.082, 0.056, 0.044);
+        else if (type == 2) baseCol = vec3(0.058, 0.065, 0.060);
+        else if (type == 3) baseCol = vec3(0.062, 0.070, 0.083);
+        else                baseCol = vec3(0.075, 0.070, 0.064);
+
+        // Per-building phase variation (±10%) so no two buildings are identical
+        float pv  = 1.0 + (hash(vPhase * 17.3 + 1.7) - 0.5) * 0.20;
+        vec3  col = baseCol * pv;
+
+        if (!isTop) {
+          // ── Horizontal floor separation bands ──────────────────────
+          // One thin dark line per ~4.5-unit floor; creates a strong
+          // architectural rhythm across the entire building height.
+          float floorCount = max(4.0, vBH / 4.5);
+          float fy = fract(vUv.y * floorCount);
+          float floorLine  = 1.0 - smoothstep(0.0, 0.055, fy)
+                                 * smoothstep(0.0, 0.055, 1.0 - fy);
+          col *= 1.0 - floorLine * (type == 1 ? 0.22 : 0.13);
+
+          // ── Vertical bay division lines ─────────────────────────────
+          // Bay width varies by archetype to reflect real construction logic:
+          // glass = 4.2 u (curtain modules), brick = 3.5 u, concrete = 5.5 u
+          float bayW     = type == 2 ? 5.5 : (type == 1 ? 3.5 : 4.2);
+          float colSpan  = isFront ? vBW : vBW * 0.68; // side faces narrower
+          float bayCount = max(2.0, colSpan / bayW);
+          float bx = fract(vUv.x * bayCount);
+          float bayLine  = 1.0 - smoothstep(0.0, 0.045, bx)
+                               * smoothstep(0.0, 0.045, 1.0 - bx);
+          col *= 1.0 - bayLine * 0.09;
+
+          // ── Corner darkening — shadow accumulates at building corners ─
+          float crnX = 1.0 - smoothstep(0.0, 0.09, vUv.x)
+                           * smoothstep(0.0, 0.09, 1.0 - vUv.x);
+          col *= 1.0 - crnX * 0.34;
+
+          // ── Thin specular edge highlight (moonlight on building edges) ──
+          float eX = smoothstep(0.96, 1.00, vUv.x) + smoothstep(0.96, 1.00, 1.0 - vUv.x);
+          float eY = smoothstep(0.98, 1.00, vUv.y) + smoothstep(0.98, 1.00, 1.0 - vUv.y);
+          float edge = clamp(eX + eY, 0.0, 1.0);
+          // Glass and steel read brighter on their edges
+          float edgeBright = (type == 0 || type == 3) ? 0.15 : 0.06;
+          col += vec3(edge * edgeBright);
+
+          // ── Glass curtain wall: subtle vertical reflection banding ───
+          if (type == 0) {
+            float rb = 0.5 + 0.5 * sin(vUv.x * 13.7 + vPhase * 6.28);
+            col += rb * rb * vec3(0.010, 0.013, 0.019);
+          }
+
+          // ── Brick: subtle horizontal mortar row texture ──────────────
+          if (type == 1) {
+            float rowV = fract(vUv.y * (vBH / 0.45));
+            col *= 1.0 - smoothstep(0.90, 1.0, rowV) * 0.08;
+          }
+
+          // ── Recessed window band — slight shadow inside reveal ───────
+          float floorMid = 0.5 + 0.5 * sin(fy * 3.14159);
+          float winDepth = smoothstep(0.12, 0.62, floorMid)
+                         * smoothstep(0.12, 0.62, 1.0 - floorMid);
+          col *= 1.0 - winDepth * 0.06;
+
+          // ── Rain-wet base: moisture darkens bottom ~18% of facade ────
+          col *= 1.0 - smoothstep(0.0, 0.18, vUv.y) * 0.26;
+        }
+
+        // ── Indirect city glow: warm uplight from street level ──────────
+        float cityGlow = 0.020 * (1.0 - vUv.y);
+        col += vec3(cityGlow, cityGlow * 0.50, cityGlow * 0.16);
+
+        // ── Lightning flash: faint cool wash across all surfaces ─────────
+        col += vec3(uLightning * 0.040, uLightning * 0.048, uLightning * 0.068);
+
+        gl_FragColor = vec4(col, 1.0);
+      }
+    `,
+    side: THREE.FrontSide,
+  });
+}
+
+// ─── Floor-pattern window material — archetype-aware occupancy ────────────────
+// aFloorType: 0=dark  1=office  2=residential  3=emergency  4=blinds
+// Floors of the same type use per-window aPhase for individual variation
+// so patterns look structured (floor-based) but not robotic.
+function makeFloorWindowMaterial() {
   return new THREE.ShaderMaterial({
     uniforms: { uTime: { value: 0 }, uLightning: { value: 0 } },
     vertexShader: `
+      attribute float aFloorType;
       attribute float aPhase;
       attribute vec3  aColor;
       uniform  float  uTime;
       uniform  float  uLightning;
       varying  vec3   vCol;
       void main() {
-        float speed  = 0.08 + aPhase * 0.42;
-        float wave   = 0.55 + 0.45 * sin(uTime * speed + aPhase * 6.28318);
-        float onOff  = step(0.28, fract(aPhase * 7.38906));
-        // Occasional fast-flicker override (offices turning off/on)
-        float flick  = step(0.97, fract(aPhase * 31.4 + uTime * (0.05 + aPhase * 0.15)));
-        // Very subtle lightning sympathy — windows catch a touch of the flash
-        vCol = aColor * wave * max(onOff, flick) * 1.75 * (1.0 + uLightning * 0.16);
-        gl_Position  = projectionMatrix * modelViewMatrix * instanceMatrix * vec4(position, 1.0);
+        float ft    = aFloorType;
+        float speed = 0.04 + aPhase * 0.10;
+
+        if (ft < 0.5) {
+          // Dark floor — nearly all off; rare security light stays on
+          float secOn = step(0.96, fract(aPhase * 31.7));
+          vCol = vec3(0.20, 0.12, 0.06) * 0.14 * secOn;
+
+        } else if (ft < 1.5) {
+          // Office — cool white, 80% on, very gentle flicker
+          float wave  = 0.90 + 0.10 * sin(uTime * speed + aPhase * 6.28);
+          float onOff = step(0.20, fract(aPhase * 7.389));
+          float flick = step(0.988, fract(aPhase * 31.4 + uTime * (0.04 + aPhase * 0.06)));
+          float lit   = wave * max(onOff, flick) * (1.0 + uLightning * 0.13);
+          vCol = aColor * lit * 1.80;
+
+        } else if (ft < 2.5) {
+          // Residential — warm amber, ~50% on, slow organic variation
+          float wave  = 0.65 + 0.35 * sin(uTime * speed * 0.45 + aPhase * 6.28);
+          float onOff = step(0.50, fract(aPhase * 7.389));
+          vCol = aColor * wave * onOff * 1.50 * (1.0 + uLightning * 0.09);
+
+        } else if (ft < 3.5) {
+          // Emergency — dim steady red, always on
+          vCol = vec3(0.52, 0.04, 0.02) * 0.48;
+
+        } else {
+          // Blinds / curtain — soft diffuse warm glow, 40% probability
+          float glow  = 0.26 + 0.16 * sin(uTime * speed * 0.28 + aPhase * 6.28);
+          float onOff = step(0.60, fract(aPhase * 7.389));
+          vCol = vec3(0.76, 0.48, 0.18) * glow * onOff;
+        }
+
+        gl_Position = projectionMatrix * modelViewMatrix * instanceMatrix * vec4(position, 1.0);
       }
     `,
     fragmentShader: `
@@ -454,124 +612,298 @@ function Steam() {
   return <points geometry={geo}><steamMaterial ref={matRef} transparent depthWrite={false} /></points>;
 }
 
-// ─── Skyline — 220 buildings + GPU-animated windows ──────────────────────────
+// ─── Skyline rooftop micro-details — tanks, HVAC, antennas, maintenance lights ─
+function SkylineRooftopDetails({ tops }: { tops: [number, number, number][] }) {
+  const { tankMat, hvacMat, antMat, mlightMat, tanks, hvacs, ants, mlights } = useMemo(() => {
+    const tankMat   = new THREE.MeshStandardMaterial({ color: '#2e2418', roughness: 0.93, metalness: 0.05 });
+    const hvacMat   = new THREE.MeshStandardMaterial({ color: '#25282f', roughness: 0.78, metalness: 0.46 });
+    const antMat    = new THREE.MeshStandardMaterial({ color: '#484848', metalness: 0.72, roughness: 0.50 });
+    const mlightMat = new THREE.MeshBasicMaterial({ color: '#ff3030', toneMapped: false });
+    const tanks:   THREE.Matrix4[] = [];
+    const hvacs:   THREE.Matrix4[] = [];
+    const ants:    THREE.Matrix4[] = [];
+    const mlights: THREE.Matrix4[] = [];
+    const dummy = new THREE.Object3D();
+
+    tops.forEach(([bx, bh, bz], i) => {
+      if (bh < 35) return; // skip very short buildings — details too small to see
+      // Deterministic hashes so layout is stable across re-renders
+      const h1 = Math.sin(i * 127.1 + 311.7) * 43758.5453;
+      const r1  = h1 - Math.floor(h1);
+      const h2 = Math.sin(i * 83.3  +  17.1) * 43758.5453;
+      const r2  = h2 - Math.floor(h2);
+      const ox = (r1 - 0.5) * 5.0;
+      const oz = (r2 - 0.5) * 5.0;
+
+      if (r1 < 0.24 && tanks.length < 72) {
+        // Wooden water tank (cylinder)
+        dummy.position.set(bx + ox, bh + 3.5, bz + oz);
+        dummy.scale.set(2.0, 4.0, 2.0);
+        dummy.updateMatrix();
+        tanks.push(dummy.matrix.clone());
+      } else if (r1 < 0.52 && hvacs.length < 95) {
+        // HVAC box
+        dummy.position.set(bx + ox * 0.7, bh + 1.2, bz + oz * 0.7);
+        dummy.scale.set(3.4, 1.9, 2.4);
+        dummy.updateMatrix();
+        hvacs.push(dummy.matrix.clone());
+      } else if (r1 < 0.80 && ants.length < 115) {
+        // Antenna / communication mast
+        const ah = 3.0 + r2 * 9.0;
+        dummy.position.set(bx + ox * 0.4, bh + ah * 0.5, bz + oz * 0.4);
+        dummy.scale.set(0.14, ah, 0.14);
+        dummy.updateMatrix();
+        ants.push(dummy.matrix.clone());
+        // Red aviation maintenance light at mast tip
+        dummy.position.set(bx + ox * 0.4, bh + ah + 0.30, bz + oz * 0.4);
+        dummy.scale.setScalar(0.24);
+        dummy.updateMatrix();
+        mlights.push(dummy.matrix.clone());
+      }
+    });
+
+    return { tankMat, hvacMat, antMat, mlightMat, tanks, hvacs, ants, mlights };
+  }, [tops]);
+
+  const tankRef   = useRef<THREE.InstancedMesh>(null);
+  const hvacRef   = useRef<THREE.InstancedMesh>(null);
+  const antRef    = useRef<THREE.InstancedMesh>(null);
+  const mlRef     = useRef<THREE.InstancedMesh>(null);
+
+  useEffect(() => {
+    if (tankRef.current && tanks.length > 0) {
+      tanks.forEach((m, i) => tankRef.current!.setMatrixAt(i, m));
+      tankRef.current.instanceMatrix.needsUpdate = true;
+    }
+    if (hvacRef.current && hvacs.length > 0) {
+      hvacs.forEach((m, i) => hvacRef.current!.setMatrixAt(i, m));
+      hvacRef.current.instanceMatrix.needsUpdate = true;
+    }
+    if (antRef.current && ants.length > 0) {
+      ants.forEach((m, i) => antRef.current!.setMatrixAt(i, m));
+      antRef.current.instanceMatrix.needsUpdate = true;
+    }
+    if (mlRef.current && mlights.length > 0) {
+      mlights.forEach((m, i) => mlRef.current!.setMatrixAt(i, m));
+      mlRef.current.instanceMatrix.needsUpdate = true;
+    }
+  }, [tanks, hvacs, ants, mlights]);
+
+  return (
+    <group>
+      {tanks.length > 0 && (
+        <instancedMesh ref={tankRef} args={[undefined, undefined, tanks.length]} material={tankMat}>
+          <cylinderGeometry args={[0.5, 0.5, 1, 10]} />
+        </instancedMesh>
+      )}
+      {hvacs.length > 0 && (
+        <instancedMesh ref={hvacRef} args={[undefined, undefined, hvacs.length]} material={hvacMat}>
+          <boxGeometry args={[1, 1, 1]} />
+        </instancedMesh>
+      )}
+      {ants.length > 0 && (
+        <instancedMesh ref={antRef} args={[undefined, undefined, ants.length]} material={antMat}>
+          <boxGeometry args={[1, 1, 1]} />
+        </instancedMesh>
+      )}
+      {mlights.length > 0 && (
+        <instancedMesh ref={mlRef} args={[undefined, undefined, mlights.length]} material={mlightMat}>
+          <sphereGeometry args={[1, 6, 4]} />
+        </instancedMesh>
+      )}
+    </group>
+  );
+}
+
+// ─── Skyline — 220 buildings + floor-pattern windows + rooftop details ─────────
 function Skyline() {
   const BUILD_COUNT = 220;
 
-  const { bMatrices, wMatrices, wColors, bTopPositions } = useMemo(() => {
-    const bMat: THREE.Matrix4[]   = [];
-    const wMat: THREE.Matrix4[]   = [];
-    const wCol: THREE.Color[]     = [];
-    const tops: [number,number,number][] = [];
+  const buildData = useMemo(() => {
+    const bMat:        THREE.Matrix4[]          = [];
+    const wMat:        THREE.Matrix4[]          = [];
+    const wColors:     THREE.Color[]            = [];
+    const bTypes:      number[]                 = [];
+    const bPhases:     number[]                 = [];
+    const bWidths:     number[]                 = [];
+    const bHeights:    number[]                 = [];
+    const wFloorTypes: number[]                 = [];
+    const wPhases:     number[]                 = [];
+    const tops:        [number, number, number][] = [];
+
     const dummy = new THREE.Object3D();
     const c     = new THREE.Color();
-    const warm  = ['#ffe4b0','#ffd580','#fff0c0','#ffeac0'];
-    const cool  = ['#c0d8ff','#d0e8ff','#a8c8ff'];
-    const neon  = ['#40ffcc','#ff4488','#88ffff','#ffaa00'];
+
+    // Window color palettes per floor type
+    const officeColors = ['#d0e4ff', '#c8dcff', '#dce8ff', '#e8f4ff'];
+    const residColors  = ['#ffe4b0', '#ffd580', '#ffca80', '#ffd090'];
+
+    // Archetype cumulative probability:
+    //   0 glass(20%) | 1 brick(30%) | 2 concrete(20%) | 3 steel(15%) | 4 painted(15%)
+    const typeThresh = [0.20, 0.50, 0.70, 0.85, 1.00];
 
     for (let i = 0; i < BUILD_COUNT; i++) {
       const ring  = Math.floor(i / 22);
       const angle = (i % 22) * (Math.PI * 2 / 22) + ring * 0.4;
       const rad   = 55 + ring * 28 + Math.random() * 18;
-      const bx    = Math.cos(angle) * rad + (Math.random()-0.5) * 20;
-      const bz    = -80 + Math.sin(angle) * rad * 0.45 + (Math.random()-0.5) * 15;
+      const bx    = Math.cos(angle) * rad + (Math.random() - 0.5) * 20;
+      const bz    = -80 + Math.sin(angle) * rad * 0.45 + (Math.random() - 0.5) * 15;
       const bw    = 8  + Math.random() * 28;
       const bd    = 8  + Math.random() * 28;
       const bh    = 25 + Math.random() * 220;
 
-      dummy.position.set(bx, bh/2, bz);
+      // Assign archetype
+      const bRoll  = Math.random();
+      const bType  = Math.max(0, typeThresh.findIndex(t => bRoll < t));
+      const bPhase = Math.random();
+
+      dummy.position.set(bx, bh / 2, bz);
       dummy.scale.set(bw, bh, bd);
       dummy.updateMatrix();
       bMat.push(dummy.matrix.clone());
+      bTypes.push(bType);
+      bPhases.push(bPhase);
+      bWidths.push(bw);
+      bHeights.push(bh);
       tops.push([bx, bh, bz]);
 
-      const frontZ = bz + bd/2 + 0.2;
-      const cols   = Math.max(2, Math.floor(bw/5));
-      const rows   = Math.max(2, Math.floor(bh/6));
+      // Window grid on front face
+      const frontZ = bz + bd / 2 + 0.2;
+      const cols   = Math.max(2, Math.floor(bw / 5));
+      const rows   = Math.max(2, Math.floor(bh / 6));
       const stepX  = bw / (cols + 1);
       const stepY  = bh / (rows + 1);
 
+      // Per-building floor-occupancy seed (deterministic, stable)
+      const floorSeed = bPhase * 997.3;
+
       for (let r = 0; r < rows; r++) {
+        // Deterministic floor personality — same result every render
+        const fh  = Math.sin(floorSeed + r * 2.399) * 43758.5453;
+        const fv  = fh - Math.floor(fh);
+
+        let floorType: number;
+        if      (fv < 0.18) floorType = 0; // dark         18%
+        else if (fv < 0.55) floorType = 1; // office       37%
+        else if (fv < 0.82) floorType = 2; // residential  27%
+        else if (fv < 0.92) floorType = 4; // blinds       10%
+        else                floorType = 3; // emergency     8%
+
+        // Architectural overrides
+        if (bType === 0 && r >= rows - 2)          floorType = 1; // glass top floors always lit
+        if ((bType === 1 || bType === 4) && r === 0) floorType = 1; // retail ground floor
+
         for (let col = 0; col < cols; col++) {
-          if (Math.random() > 0.55) continue;
-          dummy.position.set(bx - bw/2 + stepX*(col+1), stepY*(r+1), frontZ);
-          dummy.scale.set(Math.min(stepX*0.55,3), Math.min(stepY*0.6,3.5), 1);
-          dummy.rotation.set(0,0,0);
+          // Dark floors: almost no windows placed (saves draw count)
+          if (floorType === 0 && Math.random() > 0.06) continue;
+          // Standard density for lit floors
+          if (Math.random() > 0.62) continue;
+
+          dummy.position.set(
+            bx - bw / 2 + stepX * (col + 1),
+            stepY * (r + 1),
+            frontZ,
+          );
+          dummy.scale.set(
+            Math.min(stepX * 0.55, 3.0),
+            Math.min(stepY * 0.58, 3.5),
+            1,
+          );
+          dummy.rotation.set(0, 0, 0);
           dummy.updateMatrix();
           wMat.push(dummy.matrix.clone());
-          const rng = Math.random();
-          if (rng < 0.06)      c.set(neon[Math.floor(Math.random()*neon.length)]);
-          else if (rng < 0.45) c.set(warm[Math.floor(Math.random()*warm.length)]);
-          else                 c.set(cool[Math.floor(Math.random()*cool.length)]);
-          wCol.push(c.clone());
+
+          wFloorTypes.push(floorType);
+          wPhases.push(Math.random());
+
+          if (floorType === 1) {
+            c.set(officeColors[Math.floor(Math.random() * officeColors.length)]);
+          } else if (floorType === 2) {
+            c.set(residColors[Math.floor(Math.random() * residColors.length)]);
+          } else {
+            c.set('#ffffff');
+          }
+          wColors.push(c.clone());
         }
       }
     }
-    return { bMatrices: bMat, wMatrices: wMat, wColors: wCol, bTopPositions: tops };
+
+    return { bMat, wMat, wColors, bTypes, bPhases, bWidths, bHeights, wFloorTypes, wPhases, tops };
   }, []);
 
-  const windowMat    = useMemo(() => makeWindowMaterial(), []);
-  const buildRef     = useRef<THREE.InstancedMesh>(null);
-  const windowRef    = useRef<THREE.InstancedMesh>(null);
+  const facadeMat = useMemo(() => makeBuildingFacadeMaterial(), []);
+  const windowMat = useMemo(() => makeFloorWindowMaterial(), []);
+  const buildRef  = useRef<THREE.InstancedMesh>(null);
+  const windowRef = useRef<THREE.InstancedMesh>(null);
 
+  // Upload per-instance building facade attributes
   useEffect(() => {
-    if (buildRef.current) {
-      bMatrices.forEach((m, i) => buildRef.current!.setMatrixAt(i, m));
-      buildRef.current.instanceMatrix.needsUpdate = true;
-      // Per-building subtle color variation — concrete, glass, brick, steel tones
-      // All very dark but individually distinct to break the single-flat-color look.
-      const bc = new THREE.Color();
-      const VARIANTS = [
-        0x0c1018, // cool dark concrete
-        0x0b0e15, // deep blue-gray glass
-        0x0e1116, // neutral dark
-        0x101318, // dark steel
-        0x0f1014, // near-black slate
-        0x0d1118, // slightly cool
-        0x111419, // warm dark gray
-        0x0c0f13, // very dark blue
-        0x0e1114, // neutral concrete
-        0x101218, // warm-cool mix
-      ];
-      for (let i = 0; i < bMatrices.length; i++) {
-        bc.setHex(VARIANTS[i % VARIANTS.length]);
-        buildRef.current!.setColorAt(i, bc);
-      }
-      if (buildRef.current.instanceColor) buildRef.current.instanceColor.needsUpdate = true;
-    }
-  }, [bMatrices]);
+    if (!buildRef.current) return;
+    const { bMat, bTypes, bPhases, bWidths, bHeights } = buildData;
+    const n = bMat.length;
+    bMat.forEach((m, i) => buildRef.current!.setMatrixAt(i, m));
+    buildRef.current.instanceMatrix.needsUpdate = true;
 
+    const aType  = new Float32Array(n);
+    const aPhase = new Float32Array(n);
+    const aBW    = new Float32Array(n);
+    const aBH    = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      aType[i]  = bTypes[i];
+      aPhase[i] = bPhases[i];
+      aBW[i]    = bWidths[i];
+      aBH[i]    = bHeights[i];
+    }
+    buildRef.current.geometry.setAttribute('aType',  new THREE.InstancedBufferAttribute(aType,  1));
+    buildRef.current.geometry.setAttribute('aPhase', new THREE.InstancedBufferAttribute(aPhase, 1));
+    buildRef.current.geometry.setAttribute('aBW',    new THREE.InstancedBufferAttribute(aBW,    1));
+    buildRef.current.geometry.setAttribute('aBH',    new THREE.InstancedBufferAttribute(aBH,    1));
+  }, [buildData]);
+
+  // Upload per-instance window floor-type attributes
   useEffect(() => {
     if (!windowRef.current) return;
-    wMatrices.forEach((m, i) => windowRef.current!.setMatrixAt(i, m));
+    const { wMat, wColors, wFloorTypes, wPhases } = buildData;
+    const n = wMat.length;
+    wMat.forEach((m, i) => windowRef.current!.setMatrixAt(i, m));
     windowRef.current.instanceMatrix.needsUpdate = true;
-    const n = wMatrices.length;
-    const ph  = new Float32Array(n);
-    const col = new Float32Array(n * 3);
+
+    const aFloorType = new Float32Array(n);
+    const aPhase     = new Float32Array(n);
+    const aColor     = new Float32Array(n * 3);
     for (let i = 0; i < n; i++) {
-      ph[i] = Math.random();
-      col[i*3]=wColors[i].r; col[i*3+1]=wColors[i].g; col[i*3+2]=wColors[i].b;
+      aFloorType[i]    = wFloorTypes[i];
+      aPhase[i]        = wPhases[i];
+      aColor[i * 3]    = wColors[i].r;
+      aColor[i * 3 + 1] = wColors[i].g;
+      aColor[i * 3 + 2] = wColors[i].b;
     }
-    windowRef.current.geometry.setAttribute('aPhase', new THREE.InstancedBufferAttribute(ph, 1));
-    windowRef.current.geometry.setAttribute('aColor', new THREE.InstancedBufferAttribute(col, 3));
-  }, [wMatrices, wColors]);
+    windowRef.current.geometry.setAttribute('aFloorType', new THREE.InstancedBufferAttribute(aFloorType, 1));
+    windowRef.current.geometry.setAttribute('aPhase',     new THREE.InstancedBufferAttribute(aPhase,     1));
+    windowRef.current.geometry.setAttribute('aColor',     new THREE.InstancedBufferAttribute(aColor,     3));
+  }, [buildData]);
 
   useFrame((_, dt) => {
+    facadeMat.uniforms.uLightning.value  = W.lightning;
     windowMat.uniforms.uTime.value      += dt;
     windowMat.uniforms.uLightning.value  = W.lightning;
   });
 
   return (
     <group>
-      <instancedMesh ref={buildRef} args={[undefined, undefined, BUILD_COUNT]}>
-        <boxGeometry args={[1,1,1]} />
-        <meshStandardMaterial color="#0b0e14" roughness={0.92} metalness={0.08} />
+      <instancedMesh ref={buildRef} args={[undefined, undefined, BUILD_COUNT]} material={facadeMat}>
+        <boxGeometry args={[1, 1, 1]} />
       </instancedMesh>
-      {wMatrices.length > 0 && (
-        <instancedMesh ref={windowRef} args={[undefined, undefined, wMatrices.length]} material={windowMat}>
-          <planeGeometry args={[1,1]} />
+      {buildData.wMat.length > 0 && (
+        <instancedMesh
+          ref={windowRef}
+          args={[undefined, undefined, buildData.wMat.length]}
+          material={windowMat}
+        >
+          <planeGeometry args={[1, 1]} />
         </instancedMesh>
       )}
+      <SkylineRooftopDetails tops={buildData.tops} />
     </group>
   );
 }
