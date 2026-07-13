@@ -234,8 +234,11 @@ function RooftopClutter() {
         <mesh position={[0,0.85,0.24]}><planeGeometry args={[0.85,1.2]} /><meshStandardMaterial color="#2c3a2c" roughness={0.7} /></mesh>
       </group>
 
-      {/* Drain covers — sunk grates where low-lying water collects */}
-      {([[6,0.03,12],[-15,0.03,20],[9,0.03,-33],[-4,0.03,-30]] as [number,number,number][]).map(([x,y,z],i)=>(
+      {/* Drain covers — sunk grates where low-lying water collects.
+          Raised off 0.03 (which exactly matched the full-floor WaterFlow
+          sheet height and guaranteed z-fighting everywhere) to a clear band
+          above every other water-layer mesh. */}
+      {([[6,0.05,12],[-15,0.05,20],[9,0.05,-33],[-4,0.05,-30]] as [number,number,number][]).map(([x,y,z],i)=>(
         <group key={i} position={[x,y,z]}>
           <mesh rotation={[-Math.PI/2,0,0]}><circleGeometry args={[0.9,16]} /><meshStandardMaterial color="#0e0f11" roughness={0.55} metalness={0.55} /></mesh>
           {Array.from({length:6}).map((_,j)=>(
@@ -338,8 +341,11 @@ function ExtraPuddles() {
 
   return (
     <group>
+      {/* Lifted to 0.07 — clear of the drain covers/flow streaks below and the
+          core puddle-ripple/water-flow layers, eliminating a z-fight risk
+          where these blobs' footprints overlapped those meshes. */}
       {PUDDLES.map(([x, z], i) => (
-        <mesh key={i} position={[x, 0.025, z]} rotation={[-Math.PI / 2, 0, 0]} geometry={geos[i]} material={mat} />
+        <mesh key={i} position={[x, 0.07, z]} rotation={[-Math.PI / 2, 0, 0]} geometry={geos[i]} material={mat} />
       ))}
     </group>
   );
@@ -395,7 +401,10 @@ function DrainFlowStreaks() {
         const angle = Math.atan2(dz, dx);
         const midX = (fx + tx) / 2, midZ = (fz + tz) / 2;
         return (
-          <mesh key={i} position={[midX, 0.028, midZ]} rotation={[-Math.PI / 2, 0, -angle]} material={mat}>
+          // Sits between the drain covers (0.05) and the extra puddles
+          // (0.07) — was 0.028, which sat right in the middle of several
+          // overlapping meshes and risked z-fighting at both ends of the run.
+          <mesh key={i} position={[midX, 0.06, midZ]} rotation={[-Math.PI / 2, 0, -angle]} material={mat}>
             <planeGeometry args={[len, 0.7]} />
           </mesh>
         );
@@ -481,16 +490,22 @@ function WindDebris() {
 
   const paperBase = useMemo(() => new THREE.Vector3(14, 0.05, 24), []);
   const bagBase   = useMemo(() => new THREE.Vector3(-22, 0.35, 10), []);
+  // y raised from 0.03 to 0.045 — 0.03 exactly matched the full-floor
+  // WaterFlow sheet height and guaranteed a z-fight everywhere a leaf drifted.
   const leafBases = useMemo(() => [
-    new THREE.Vector3(2, 0.03, -2),
-    new THREE.Vector3(-10, 0.03, 6),
-    new THREE.Vector3(18, 0.03, -20),
+    new THREE.Vector3(2, 0.045, -2),
+    new THREE.Vector3(-10, 0.045, 6),
+    new THREE.Vector3(18, 0.045, -20),
   ], []);
 
   useFrame((state) => {
     const t = state.clock.elapsedTime;
     // Gust envelope — long calm stretches punctuated by brief gusts.
-    const gust = Math.max(0, Math.sin(t * 0.09) - 0.72) * 3.4;
+    // Squaring the raised sine term eases the gust in and out smoothly
+    // (previously the linear ramp had an instant slope change right at the
+    // threshold crossing, reading as an abrupt "jolt" rather than a breeze).
+    const gustRaw = Math.max(0, Math.sin(t * 0.09) - 0.72);
+    const gust = gustRaw * gustRaw * (3.4 / 0.28);
 
     if (paperRef.current) {
       paperRef.current.position.x = paperBase.x + Math.sin(t * 0.22) * (0.6 + gust * 1.4);
@@ -605,13 +620,15 @@ function MaintenanceDecals() {
         <planeGeometry args={[1.1, 0.45]} />
         <meshBasicMaterial map={labelTex} transparent depthWrite={false} toneMapped={false} />
       </mesh>
-      {/* Faded stencilled "NO STEP" near a drain cover */}
-      <mesh position={[6, 0.02, 15]} rotation={[-Math.PI / 2, 0, 0.2]}>
+      {/* Faded stencilled "NO STEP" near a drain cover.
+          Raised to 0.08 — was 0.02, tied exactly with the core static-puddle
+          layer height and sat under the raised drain/flow/extra-puddle band. */}
+      <mesh position={[6, 0.08, 15]} rotation={[-Math.PI / 2, 0, 0.2]}>
         <planeGeometry args={[2.2, 1.0]} />
         <meshBasicMaterial map={noStepTex} transparent depthWrite={false} toneMapped={false} />
       </mesh>
-      {/* Faded directional arrow painted toward the roof hatch */}
-      <mesh position={[-24, 0.02, -10]} rotation={[-Math.PI / 2, 0, Math.PI]}>
+      {/* Faded directional arrow painted toward the roof hatch (raised to match) */}
+      <mesh position={[-24, 0.08, -10]} rotation={[-Math.PI / 2, 0, Math.PI]}>
         <planeGeometry args={[2.2, 1.1]} />
         <meshBasicMaterial map={arrowTex} transparent depthWrite={false} toneMapped={false} />
       </mesh>
