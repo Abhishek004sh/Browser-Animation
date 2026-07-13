@@ -13,6 +13,7 @@ import { RooftopDetails } from './RooftopDetails';
 const SteamMaterial = shaderMaterial(
   { uTime: 0 },
   `uniform float uTime; attribute float aPhase;
+   varying float vAlpha;
    void main() {
      vec3 p = position;
      float t = fract(aPhase + uTime * 0.09);
@@ -21,10 +22,17 @@ const SteamMaterial = shaderMaterial(
      p.y += t * 20.0;
      p.z += cos(uTime * 0.38 + aPhase * 5.8) * spread;
      gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
-     float alpha = max(0.0, 1.0 - t);
-     gl_PointSize = max(1.5, alpha * 16.0);
+     vAlpha = max(0.0, 1.0 - t * t);
+     gl_PointSize = max(1.5, vAlpha * 18.0);
    }`,
-  `void main() { gl_FragColor = vec4(0.85, 0.88, 0.95, 0.20); }`
+  `varying float vAlpha;
+   void main() {
+     vec2 uv = gl_PointCoord * 2.0 - 1.0;
+     float r = length(uv);
+     float a = (1.0 - smoothstep(0.28, 1.0, r)) * vAlpha * 0.30;
+     if (a < 0.005) discard;
+     gl_FragColor = vec4(0.80, 0.84, 0.94, a);
+   }`
 );
 
 extend({ SteamMaterial });
@@ -510,6 +518,26 @@ function Skyline() {
     if (buildRef.current) {
       bMatrices.forEach((m, i) => buildRef.current!.setMatrixAt(i, m));
       buildRef.current.instanceMatrix.needsUpdate = true;
+      // Per-building subtle color variation — concrete, glass, brick, steel tones
+      // All very dark but individually distinct to break the single-flat-color look.
+      const bc = new THREE.Color();
+      const VARIANTS = [
+        0x0c1018, // cool dark concrete
+        0x0b0e15, // deep blue-gray glass
+        0x0e1116, // neutral dark
+        0x101318, // dark steel
+        0x0f1014, // near-black slate
+        0x0d1118, // slightly cool
+        0x111419, // warm dark gray
+        0x0c0f13, // very dark blue
+        0x0e1114, // neutral concrete
+        0x101218, // warm-cool mix
+      ];
+      for (let i = 0; i < bMatrices.length; i++) {
+        bc.setHex(VARIANTS[i % VARIANTS.length]);
+        buildRef.current!.setColorAt(i, bc);
+      }
+      if (buildRef.current.instanceColor) buildRef.current.instanceColor.needsUpdate = true;
     }
   }, [bMatrices]);
 
@@ -607,6 +635,33 @@ function BuildingBlinkers() {
   );
 }
 
+// ─── Streets — dark wet-asphalt road planes at car lanes ────────────────────
+// Gives the moving car lights a physical surface to sit on and reflect from.
+function Streets() {
+  // East-west roads at z values matching Cars component
+  const EW_Z = [-100, -128, -160, -192];
+  // North-south roads at x values matching Cars component
+  const NS_X = [-58, -8, 48, 98];
+  return (
+    <group>
+      {/* E-W road lanes — long thin planes along X axis */}
+      {EW_Z.map((z, i) => (
+        <mesh key={`ew-${i}`} position={[0, 0.01, z]} rotation={[-Math.PI/2, 0, 0]}>
+          <planeGeometry args={[420, 10]} />
+          <meshStandardMaterial color="#0a0b0d" roughness={0.28} metalness={0.14} />
+        </mesh>
+      ))}
+      {/* N-S road lanes — long thin planes along Z axis */}
+      {NS_X.map((x, i) => (
+        <mesh key={`ns-${i}`} position={[x, 0.01, -130]} rotation={[-Math.PI/2, 0, 0]}>
+          <planeGeometry args={[10, 280]} />
+          <meshStandardMaterial color="#0a0b0d" roughness={0.28} metalness={0.14} />
+        </mesh>
+      ))}
+    </group>
+  );
+}
+
 // ─── Cars — white headlights + red taillights ────────────────────────────────
 interface CarState {
   type: 'EW' | 'NS'; x: number; y: number; z: number; speed: number; dir: number;
@@ -665,11 +720,16 @@ function Cars() {
         if (c.z >  50)  c.z = -220;
         if (c.z < -220) c.z =  50;
       }
-      const offX = c.type==='EW' ? c.dir*1.8 : 0;
-      const offZ = c.type==='NS' ? c.dir*1.8 : 0;
-      dummy.position.set(c.x+offX, c.y, c.z+offZ); dummy.scale.setScalar(0.55); dummy.updateMatrix();
+      const offX = c.type==='EW' ? c.dir*2.2 : 0;
+      const offZ = c.type==='NS' ? c.dir*2.2 : 0;
+      // Flat ellipsoid lenses hugging the road surface (y≈0.35) — no floating balls
+      dummy.position.set(c.x+offX, 0.35, c.z+offZ);
+      dummy.scale.set(0.65, 0.18, 0.65);
+      dummy.updateMatrix();
       headRef.current!.setMatrixAt(i, dummy.matrix);
-      dummy.position.set(c.x-offX*0.8, c.y, c.z-offZ*0.8); dummy.scale.setScalar(0.45); dummy.updateMatrix();
+      dummy.position.set(c.x-offX*0.85, 0.35, c.z-offZ*0.85);
+      dummy.scale.set(0.52, 0.15, 0.52);
+      dummy.updateMatrix();
       tailRef.current!.setMatrixAt(i, dummy.matrix);
     });
     headRef.current.instanceMatrix.needsUpdate = true;
@@ -678,15 +738,15 @@ function Cars() {
 
   return (
     <group>
-      {/* Headlights — white/warm */}
+      {/* Headlights — warm white discs on road surface */}
       <instancedMesh ref={headRef} args={[undefined, undefined, N]}>
-        <sphereGeometry args={[1, 4, 3]} />
-        <meshBasicMaterial color="#fff8e8" toneMapped={false} />
+        <sphereGeometry args={[1, 6, 4]} />
+        <meshBasicMaterial color="#fff4e0" toneMapped={false} />
       </instancedMesh>
-      {/* Taillights — red */}
+      {/* Taillights — red discs on road surface */}
       <instancedMesh ref={tailRef} args={[undefined, undefined, N]}>
-        <sphereGeometry args={[1, 4, 3]} />
-        <meshBasicMaterial color="#ff2200" toneMapped={false} />
+        <sphereGeometry args={[1, 6, 4]} />
+        <meshBasicMaterial color="#ff1a00" toneMapped={false} />
       </instancedMesh>
     </group>
   );
@@ -822,16 +882,33 @@ function makeDistantBillboardMaterial() {
       attribute vec3  aCol2;
       uniform  float  uTime;
       varying  vec3   vCol;
+      varying  vec2   vUv;
       void main() {
         float t     = 0.5 + 0.5 * sin(uTime * 0.22 + aPhase * 6.28318);
         float flick = step(0.94, fract(aPhase * 17.3 + uTime * (0.08 + aPhase * 0.12)));
         vCol = mix(aCol1, aCol2, max(t, flick));
+        vUv  = uv;
         gl_Position = projectionMatrix * modelViewMatrix * instanceMatrix * vec4(position, 1.0);
       }
     `,
     fragmentShader: `
-      varying vec3 vCol;
-      void main() { gl_FragColor = vec4(vCol, 1.0); }
+      uniform float uTime;
+      varying vec3  vCol;
+      varying vec2  vUv;
+      void main() {
+        // LED pixel grid — coarse subdivisions create a real-screen look
+        vec2 grid  = fract(vUv * vec2(28.0, 14.0));
+        float gapX = smoothstep(0.88, 0.96, grid.x);
+        float gapY = smoothstep(0.84, 0.94, grid.y);
+        float cell = 1.0 - max(gapX, gapY) * 0.38;
+        // Horizontal scan line — darker band drifts from top to bottom
+        float scan = 1.0 - 0.14 * smoothstep(0.0, 0.06, fract(vUv.y * 22.0));
+        // Vignette — edges fall off subtly so the screen doesn't look uniformly flat
+        float vx   = 1.0 - smoothstep(0.36, 0.50, abs(vUv.x - 0.5));
+        float vy   = 1.0 - smoothstep(0.38, 0.50, abs(vUv.y - 0.5));
+        float vig  = 0.72 + 0.28 * vx * vy;
+        gl_FragColor = vec4(vCol * cell * scan * vig, 1.0);
+      }
     `,
     side: THREE.FrontSide,
   });
@@ -982,13 +1059,13 @@ function Rooftop() {
 
   return (
     <group>
-      {/* Concrete floor — wet roughness so lights produce specular highlights.
-          emissive starts at 0 and is nudged up only briefly during a lightning
-          flash (see useFrame above), reacting far less than the puddles do
-          so wet surfaces clearly read brighter than dry concrete. */}
+      {/* Concrete floor — rain-slicked surface: low roughness and slightly
+          elevated metalness so headlights and city glow create visible
+          specular smears across the wet deck. emissive is still only
+          nudged during a lightning flash (see useFrame above). */}
       <mesh rotation={[-Math.PI/2,0,0]} position={[0,0,-20]} receiveShadow>
         <planeGeometry args={[120,120]} />
-        <meshStandardMaterial ref={floorMatRef} color="#18191d" roughness={0.52} metalness={0.06} emissive="#8fa4c8" emissiveIntensity={0} />
+        <meshStandardMaterial ref={floorMatRef} color="#161820" roughness={0.32} metalness={0.18} emissive="#8fa4c8" emissiveIntensity={0} />
       </mesh>
 
       {/* Ledges — cast soft shadows onto the deck */}
@@ -1007,36 +1084,45 @@ function Rooftop() {
         </mesh>
       ))}
 
-      {/* HVAC A */}
+      {/* HVAC A — weathered galvanized steel, rain-streaked */}
       <group position={[-16,0,-14]}>
-        <mesh position={[0,1.6,0]}><boxGeometry args={[7,3.2,5]} /><meshStandardMaterial color="#2e3138" roughness={0.88} metalness={0.35} /></mesh>
-        <mesh position={[0,3.22,0]} rotation={[-Math.PI/2,0,0]}><planeGeometry args={[5,3.5]} /><meshStandardMaterial color="#111315" roughness={0.9} /></mesh>
-        {[-1.5,-0.5,0.5,1.5].map((dx,i)=><mesh key={i} position={[dx,1.6,2.55]}><boxGeometry args={[0.08,2.6,0.12]} /><meshStandardMaterial color="#111" /></mesh>)}
+        <mesh position={[0,1.6,0]}><boxGeometry args={[7,3.2,5]} /><meshStandardMaterial color="#2a2e35" roughness={0.78} metalness={0.52} /></mesh>
+        {/* Rust streak panels */}
+        <mesh position={[1.2,1.0,2.52]} rotation={[0,0,0.06]}><planeGeometry args={[0.6,1.8]} /><meshStandardMaterial color="#3a2218" roughness={0.96} transparent opacity={0.55} /></mesh>
+        <mesh position={[0,3.22,0]} rotation={[-Math.PI/2,0,0]}><planeGeometry args={[5,3.5]} /><meshStandardMaterial color="#0e1012" roughness={0.92} metalness={0.3} /></mesh>
+        {[-1.5,-0.5,0.5,1.5].map((dx,i)=><mesh key={i} position={[dx,1.6,2.55]}><boxGeometry args={[0.08,2.6,0.12]} /><meshStandardMaterial color="#0e1014" metalness={0.55} roughness={0.6} /></mesh>)}
       </group>
 
-      {/* HVAC B */}
+      {/* HVAC B — slightly corroded housing */}
       <group position={[11,0,-5]}>
-        <mesh position={[0,1.5,0]}><boxGeometry args={[5,3,4.5]} /><meshStandardMaterial color="#2e3138" roughness={0.88} metalness={0.35} /></mesh>
-        {[-1,0,1].map((dx,i)=><mesh key={i} position={[dx,1.5,2.28]}><boxGeometry args={[0.07,2.4,0.1]} /><meshStandardMaterial color="#111" /></mesh>)}
+        <mesh position={[0,1.5,0]}><boxGeometry args={[5,3,4.5]} /><meshStandardMaterial color="#292d34" roughness={0.80} metalness={0.48} /></mesh>
+        {/* Corner rust patch */}
+        <mesh position={[-2.48,0.6,0]} rotation={[0,Math.PI/2,0]}><planeGeometry args={[1.2,1.0]} /><meshStandardMaterial color="#2e1a10" roughness={0.97} transparent opacity={0.50} /></mesh>
+        {[-1,0,1].map((dx,i)=><mesh key={i} position={[dx,1.5,2.28]}><boxGeometry args={[0.07,2.4,0.1]} /><meshStandardMaterial color="#0d1012" metalness={0.55} roughness={0.62} /></mesh>)}
       </group>
 
-      {/* HVAC C */}
+      {/* HVAC C — older unit, heavier rust banding */}
       <group position={[25,0,-18]}>
-        <mesh position={[0,1.2,0]}><boxGeometry args={[8,2.4,5]} /><meshStandardMaterial color="#333840" roughness={0.85} metalness={0.4} /></mesh>
-        <mesh position={[0,2.42,0]} rotation={[-Math.PI/2,0,0]}><ringGeometry args={[1.2,1.6,24]} /><meshStandardMaterial color="#222" side={THREE.DoubleSide} /></mesh>
+        <mesh position={[0,1.2,0]}><boxGeometry args={[8,2.4,5]} /><meshStandardMaterial color="#2e333c" roughness={0.82} metalness={0.44} /></mesh>
+        {/* Rust band at base */}
+        <mesh position={[0,0.32,0]} rotation={[0,0,0]}><boxGeometry args={[8.02,0.60,5.02]} /><meshStandardMaterial color="#2a1808" roughness={0.97} metalness={0.1} transparent opacity={0.6} /></mesh>
+        <mesh position={[0,2.42,0]} rotation={[-Math.PI/2,0,0]}><ringGeometry args={[1.2,1.6,24]} /><meshStandardMaterial color="#1a1c1f" metalness={0.55} roughness={0.58} side={THREE.DoubleSide} /></mesh>
       </group>
 
-      {/* Water tank */}
+      {/* Water tank — weathered cedar staves + rusted metal bands */}
       <group position={[20,0,-28]}>
         {([[-2,-2],[2,-2],[-2,2],[2,2]] as [number,number][]).map(([lx,lz],i)=>(
-          <mesh key={i} position={[lx,3.5,lz]}><cylinderGeometry args={[0.14,0.16,7,8]} /><meshStandardMaterial color="#3a3a3a" metalness={0.5} roughness={0.6} /></mesh>
+          <mesh key={i} position={[lx,3.5,lz]}><cylinderGeometry args={[0.14,0.16,7,8]} /><meshStandardMaterial color="#282420" metalness={0.55} roughness={0.55} /></mesh>
         ))}
         {([[0,3.5,2,Math.PI/2,0,0],[0,3.5,-2,Math.PI/2,0,0],[-2,3.5,0,0,0,Math.PI/2],[2,3.5,0,0,0,Math.PI/2]] as number[][]).map(([x,y,z,rx,ry,rz],i)=>(
-          <mesh key={i} position={[x,y,z]} rotation={[rx,ry,rz]}><cylinderGeometry args={[0.05,0.05,4,6]} /><meshStandardMaterial color="#3a3a3a" metalness={0.5} roughness={0.6} /></mesh>
+          <mesh key={i} position={[x,y,z]} rotation={[rx,ry,rz]}><cylinderGeometry args={[0.05,0.05,4,6]} /><meshStandardMaterial color="#282420" metalness={0.55} roughness={0.55} /></mesh>
         ))}
-        <mesh position={[0,8,0]}><cylinderGeometry args={[2.4,2.6,5,18]} /><meshStandardMaterial color="#5a4a3a" roughness={0.85} metalness={0.1} /></mesh>
-        {[6,7.5,9,10.5].map((y,i)=><mesh key={i} position={[0,y,0]}><torusGeometry args={[2.55,0.1,8,24]} /><meshStandardMaterial color="#2a2018" metalness={0.6} roughness={0.5} /></mesh>)}
-        <mesh position={[0,11,0]}><coneGeometry args={[2.8,1.8,18]} /><meshStandardMaterial color="#2a2018" roughness={0.9} /></mesh>
+        {/* Aged cedar stave body — darker, slightly greenish from moisture */}
+        <mesh position={[0,8,0]}><cylinderGeometry args={[2.4,2.6,5,18]} /><meshStandardMaterial color="#3d3326" roughness={0.94} metalness={0.04} /></mesh>
+        {/* Rusted iron bands */}
+        {[6,7.5,9,10.5].map((y,i)=><mesh key={i} position={[0,y,0]}><torusGeometry args={[2.55,0.10,8,24]} /><meshStandardMaterial color="#3a2210" metalness={0.65} roughness={0.62} /></mesh>)}
+        {/* Conical roof — oxidized dark metal */}
+        <mesh position={[0,11,0]}><coneGeometry args={[2.8,1.8,18]} /><meshStandardMaterial color="#222620" roughness={0.88} metalness={0.18} /></mesh>
       </group>
 
       {/* Antenna 1 + animated beacon */}
@@ -2067,6 +2153,7 @@ export function RooftopScene() {
           <Skyline />
           <DistantBillboards />
           <BuildingBlinkers />
+          <Streets />
           <Cars />
           <Aircraft />
           <Steam />
